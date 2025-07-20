@@ -8,23 +8,26 @@ import { exec } from 'child_process';
 // Convert exec to Promise-based
 const execPromise = promisify(exec);
 
-// Basic ERC20 token template
+// Advanced ERC20 token template with all OpenZeppelin features
 const ERC20_TEMPLATE = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 {{IMPORTS}}
 
-contract {{TOKEN_NAME}} is ERC20{{INHERITANCE}} {
+contract {{TOKEN_NAME}} is {{INHERITANCE}} {
     {{VARIABLES}}
     
-    constructor(address initialOwner) ERC20("{{TOKEN_NAME}}", "{{TOKEN_SYMBOL}}") {{CONSTRUCTOR_MODIFIERS}} {
+    constructor(address initialOwner)
+        ERC20("{{TOKEN_NAME}}", "{{TOKEN_SYMBOL}}")
+        {{CONSTRUCTOR_INITIALIZERS}}
+    {
         {{CONSTRUCTOR_BODY}}
         _mint(initialOwner, {{TOTAL_SUPPLY}} * 10 ** decimals());
     }
-    
+
     {{FUNCTIONS}}
+
+    {{OVERRIDES}}
 }`;
 
 // Function to handle contract deployment logic
@@ -91,323 +94,147 @@ function generateContractCode(
   totalSupply: string, 
   features: string[]
 ) {
-  // Initialize imports, inheritance, variables, constructor modifiers and functions
-  let imports = '';
-  let inheritance = '';
-  let variables = '';
-  let constructorModifiers = '';
-  let constructorBody = '';
-  let functions = '';
-  
-  // Add Ownable if any feature requires it
-  if (features.includes('Mintable') || features.includes('Pausable') || features.includes('Flash Minting')) {
-    if (!features.includes('Access Control')) {
-      imports += '\nimport "@openzeppelin/contracts/access/Ownable.sol";';
-      inheritance += ', Ownable';
-      constructorModifiers += 'Ownable(initialOwner)';
-    }
-  }
-  
-  // Add features based on selection
-  if (features.includes('Mintable')) {
-    functions += `
-    /**
-     * @dev Creates new tokens and assigns them to the specified address.
-     * @param to The address that will receive the minted tokens
-     * @param amount The amount of tokens to mint
-     */
+  // Initialize all components
+  let imports: string[] = [];
+  let inheritance: string[] = ['ERC20'];
+  let variables: string[] = [];
+  let constructorInitializers: string[] = [];
+  let constructorBody: string[] = [];
+  let functions: string[] = [];
+  let overrides: string[] = [];
+
+  // Base imports - always include Ownable
+  imports.push('import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";');
+  imports.push('import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";');
+  inheritance.push('Ownable');
+  constructorInitializers.push('Ownable()');
+  constructorBody.push(`
+        _transferOwnership(initialOwner);`);
+
+  // Track which features are selected to avoid duplicates
+  const selectedFeatures = features.map(f => f.toLowerCase());
+  const hasAccessControl = selectedFeatures.includes('access control');
+  const hasPausable = selectedFeatures.includes('pausable');
+  const hasMintable = selectedFeatures.includes('mintable');
+
+  // Process each feature
+  features.forEach(feature => {
+    const normalizedFeature = feature.toLowerCase();
+    
+    switch (normalizedFeature) {
+      case 'mintable':
+        if (!hasAccessControl) {
+          // Only add mint function if Access Control is not selected (since it will add its own)
+          functions.push(`
     function mint(address to, uint256 amount) public onlyOwner {
         _mint(to, amount);
-    }`;
-  }
-  
-  if (features.includes('Burnable')) {
-    imports += '\nimport "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";';
-    inheritance += ', ERC20Burnable';
-    
-    // Add a custom burn function with a reason parameter
-    functions += `
-    /**
-     * @dev Burns tokens from the caller's account with a reason.
-     * @param amount The amount of tokens to burn
-     * @param reason The reason for burning tokens
-     */
-    function burnWithReason(uint256 amount, string memory reason) public {
-        burn(amount);
-        emit TokensBurned(msg.sender, amount, reason);
-    }
-    
-    // Event emitted when tokens are burned with a reason
-    event TokensBurned(address indexed burner, uint256 amount, string reason);`;
-  }
-  
-  if (features.includes('Pausable')) {
-    imports += '\nimport "@openzeppelin/contracts/security/Pausable.sol";';
-    inheritance += ', Pausable';
-    
-    functions += `
-    /**
-     * @dev Pauses all token transfers.
-     */
+    }`);
+        }
+        break;
+
+      case 'burnable':
+        imports.push('import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";');
+        inheritance.push('ERC20Burnable');
+        break;
+
+      case 'pausable':
+        imports.push('import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";');
+        inheritance.push('ERC20Pausable');
+        
+        // Only add pause/unpause functions if Access Control is not selected
+        if (!hasAccessControl) {
+          functions.push(`
     function pause() public onlyOwner {
         _pause();
     }
 
-    /**
-     * @dev Unpauses all token transfers.
-     */
     function unpause() public onlyOwner {
         _unpause();
-    }
-    
-    /**
-     * @dev Returns the current pause status of the contract.
-     */
-    function isPaused() public view returns (bool) {
-        return paused();
-    }`;
-  }
-  
-  if (features.includes('Capped Supply')) {
-    imports += '\nimport "@openzeppelin/contracts/token/ERC20/extensions/ERC20Capped.sol";';
-    inheritance += ', ERC20Capped';
-    constructorModifiers += ` ERC20Capped(${totalSupply} * 10 ** ${decimals})`;
-    
-    // Add a function to check remaining mintable tokens
-    functions += `
-    /**
-     * @dev Returns the amount of tokens that can still be minted.
-     */
-    function remainingMintableSupply() public view returns (uint256) {
-        return cap() - totalSupply();
-    }
-    
-    /**
-     * @dev Returns the cap on the token's total supply.
-     */
-    function getSupplyCap() public view returns (uint256) {
-        return cap();
-    }`;
-  }
-  
-  if (features.includes('Access Control')) {
-    imports += '\nimport "@openzeppelin/contracts/access/AccessControl.sol";';
-    inheritance = inheritance.replace(', Ownable', ''); // Replace Ownable with AccessControl
-    inheritance += ', AccessControl';
-    
-    variables += `
-    // Create a new role identifier for the minter role
+    }`);
+        }
+        break;
+
+      case 'access control':
+        imports.push('import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";');
+        inheritance.push('AccessControl');
+        constructorInitializers.push('AccessControl()');
+        variables.push(`
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");`;
-    
-    constructorBody += `
+    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");`);
+        constructorBody.push(`
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
         _grantRole(MINTER_ROLE, initialOwner);
         _grantRole(PAUSER_ROLE, initialOwner);
-        _grantRole(BURNER_ROLE, initialOwner);`;
-    
-    // Update functions to use roles instead of onlyOwner
-    if (features.includes('Mintable')) {
-      functions = functions.replace('onlyOwner', 'onlyRole(MINTER_ROLE)');
-    }
-    
-    if (features.includes('Pausable')) {
-      functions = functions.replace(/onlyOwner/g, 'onlyRole(PAUSER_ROLE)');
-    }
-    
-    // Add role management functions
-    functions += `
-    /**
-     * @dev Grants a role to an account.
-     * @param role The role being granted
-     * @param account The account receiving the role
-     */
-    function grantRole(bytes32 role, address account) public override onlyRole(DEFAULT_ADMIN_ROLE) {
-        _grantRole(role, account);
-    }
-    
-    /**
-     * @dev Revokes a role from an account.
-     * @param role The role being revoked
-     * @param account The account losing the role
-     */
-    function revokeRole(bytes32 role, address account) public override onlyRole(DEFAULT_ADMIN_ROLE) {
-        _revokeRole(role, account);
-    }`;
-  }
-  
-  // Add Votes feature
-  if (features.includes('Votes')) {
-    imports += '\nimport "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";';
-    inheritance += ', ERC20Votes';
-    constructorModifiers += ' ERC20Permit("' + name.replace(/\s+/g, '') + '")';
-    
-    functions += `
-    /**
-     * @dev Override _afterTokenTransfer to handle ERC20Votes
-     */
-    function _afterTokenTransfer(address from, address to, uint256 amount) internal override(ERC20, ERC20Votes) {
-        super._afterTokenTransfer(from, to, amount);
-    }`;
-  }
-  
-  // Add Flash Minting feature
-  if (features.includes('Flash Minting')) {
-    imports += '\nimport "@openzeppelin/contracts/token/ERC20/extensions/ERC20FlashMint.sol";';
-    inheritance += ', ERC20FlashMint';
-    
-    functions += `
-    /**
-     * @dev Returns the maximum flash loan amount for a token.
-     */
-    function maxFlashLoan(address token) public view override returns (uint256) {
-        return token == address(this) ? type(uint256).max - totalSupply() : 0;
-    }
-    
-    /**
-     * @dev Returns the flash loan fee for a token.
-     */
-    function flashFee(address token, uint256 amount) public view override returns (uint256) {
-        require(token == address(this), "ERC20FlashMint: wrong token");
-        return amount * 3 / 1000; // 0.3% fee
-    }`;
-  }
-  
-  // Handle _beforeTokenTransfer override for Pausable
-  if (features.includes('Pausable')) {
-    // Only add _beforeTokenTransfer if no other feature overrides it
-    if (!features.includes('Snapshot') && !features.includes('Votes')) {
-      functions += `
-    /**
-     * @dev Hook that is called before any transfer of tokens.
-     */
-    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override whenNotPaused {
-        super._beforeTokenTransfer(from, to, amount);
-    }`;
-    }
-  }
-  
-  // Handle _mint override for multiple features
-  if (features.includes('Votes')) {
-    const mintOverrides = ['ERC20', 'ERC20Votes'];
-    if (features.includes('Capped Supply')) {
-      mintOverrides.push('ERC20Capped');
-    }
-    
-    functions += `
-    /**
-     * @dev Override _mint to handle multiple inheritance
-     */
-    function _mint(address to, uint256 amount) internal override(${mintOverrides.join(', ')}) {
-        super._mint(to, amount);
-    }
-    
-    /**
-     * @dev Override _burn to handle ERC20Votes
-     */
-    function _burn(address account, uint256 amount) internal override(ERC20, ERC20Votes) {
-        super._burn(account, amount);
-    }`;
-  }
-  
-  // Update all onlyOwner modifiers if Access Control is selected
-  if (features.includes('Access Control')) {
-    // Replace all onlyOwner modifiers with appropriate role checks
-    functions = functions.replace(/onlyOwner/g, 'onlyRole(DEFAULT_ADMIN_ROLE)');
-  }
-  
-  // Apply mintable tax feature
-  if (features.includes('Mintable Tax')) {
-    const taxRate = 0.05; // 5% tax
-    imports += '\nimport "@openzeppelin/contracts/utils/math/SafeMath.sol";';
-    variables += '\n    using SafeMath for uint256;\n';
-    variables += `\n    address public taxWallet;\n    uint256 public taxRate = ${taxRate * 10000}; // ${taxRate * 100}% tax in basis points\n`;
-    
-    if (!features.includes('Access Control')) {
-      constructorBody += '\n        taxWallet = initialOwner;';
-    } else {
-      constructorBody += '\n        taxWallet = initialOwner;\n        _setupRole(DEFAULT_ADMIN_ROLE, initialOwner);';
-    }
-    
-    // Add minting with tax logic
-    functions += `
-    /**
-     * @dev Creates new tokens and applies tax.
-     * @param to The address that will receive the minted tokens
-     * @param amount The amount of tokens to mint
-     */
-    function mint(address to, uint256 amount) public onlyOwner {
-        // Calculate the tax amount
-        uint256 taxAmount = amount.mul(taxRate).div(10000);
-        uint256 afterTaxAmount = amount.sub(taxAmount);
+        _grantRole(BURNER_ROLE, initialOwner);`);
         
-        // Mint tokens to recipient
-        _mint(to, afterTaxAmount);
-        
-        // Mint tax to the tax wallet
-        if (taxAmount > 0) {
-            _mint(taxWallet, taxAmount);
-        }
-    }
-    
-    /**
-     * @dev Updates the tax rate.
-     * @param newTaxRate The new tax rate in basis points (1% = 100)
-     */
-    function setTaxRate(uint256 newTaxRate) public onlyOwner {
-        require(newTaxRate <= 2000, "Tax cannot exceed 20%");
-        taxRate = newTaxRate;
-    }
-    
-    /**
-     * @dev Updates the tax wallet address.
-     * @param newTaxWallet The new tax wallet address
-     */
-    function setTaxWallet(address newTaxWallet) public onlyOwner {
-        require(newTaxWallet != address(0), "New tax wallet cannot be zero address");
-        taxWallet = newTaxWallet;
-    }`;
-    
-    // Define mint overrides for tax transfers
-    const mintOverrides = `
-    function _mint(address account, uint256 amount) internal override {
-        super._mint(account, amount);
-    }`;
-    
-    functions += mintOverrides;
-  }
-
-  // Add mintable feature if not already added via tax
-  if (features.includes('Mintable') && !features.includes('Mintable Tax')) {
-    functions += `
-    /**
-     * @dev Creates new tokens and assigns them to the specified address.
-     * @param to The address that will receive the minted tokens
-     * @param amount The amount of tokens to mint
-     */
-    function mint(address to, uint256 amount) public onlyOwner {
+        // Add role-based functions
+        if (hasMintable) {
+          functions.push(`
+    function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) {
         _mint(to, amount);
-    }`;
+    }`);
+        }
+        
+        if (hasPausable) {
+          functions.push(`
+    function pause() public onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() public onlyRole(PAUSER_ROLE) {
+        _unpause();
+    }`);
+        }
+        break;
+
+      case 'flash minting':
+        imports.push('import {ERC20FlashMint} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20FlashMint.sol";');
+        inheritance.push('ERC20FlashMint');
+        break;
+
+      case 'permit':
+        imports.push('import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";');
+        inheritance.push('ERC20Permit');
+        constructorInitializers.push(`ERC20Permit("${name.replace(/\s+/g, '')}")`);
+        break;
+
+      case 'capped supply':
+        imports.push('import {ERC20Capped} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Capped.sol";');
+        inheritance.push('ERC20Capped');
+        constructorInitializers.push(`ERC20Capped(${totalSupply} * 10 ** ${decimals})`);
+        functions.push(`
+    function remainingMintableSupply() public view returns (uint256) {
+        return cap() - totalSupply();
+    }
+
+    function getSupplyCap() public view returns (uint256) {
+        return cap();
+    }`);
+        break;
+    }
+  });
+
+  // Handle _beforeTokenTransfer override for Pausable
+  if (hasPausable) {
+    overrides.push(`
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override(ERC20, ERC20Pausable) {
+        super._beforeTokenTransfer(from, to, amount);
+    }`);
   }
 
-  // Add burnable feature
-  if (features.includes('Burnable')) {
-    imports += '\nimport "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";';
-    inheritance += ', ERC20Burnable';
-  }
-  
   // Replace template placeholders
   const contractCode = ERC20_TEMPLATE
-    .replace('{{IMPORTS}}', imports)
+    .replace('{{IMPORTS}}', imports.join('\n'))
     .replace(/{{TOKEN_NAME}}/g, name.replace(/\s+/g, ''))
     .replace('{{TOKEN_SYMBOL}}', symbol)
-    .replace('{{INHERITANCE}}', inheritance)
-    .replace('{{VARIABLES}}', variables)
-    .replace('{{CONSTRUCTOR_MODIFIERS}}', constructorModifiers)
-    .replace('{{CONSTRUCTOR_BODY}}', constructorBody)
+    .replace('{{INHERITANCE}}', inheritance.join(', '))
+    .replace('{{VARIABLES}}', variables.join('\n'))
+    .replace('{{CONSTRUCTOR_INITIALIZERS}}', constructorInitializers.join('\n        '))
+    .replace('{{CONSTRUCTOR_BODY}}', constructorBody.join('\n        '))
     .replace('{{TOTAL_SUPPLY}}', totalSupply)
-    .replace('{{FUNCTIONS}}', functions);
+    .replace('{{FUNCTIONS}}', functions.join('\n\n    '))
+    .replace('{{OVERRIDES}}', overrides.join('\n\n    '));
   
   return contractCode;
 }

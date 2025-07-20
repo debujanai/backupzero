@@ -9,11 +9,6 @@ export interface ContractDetails {
   description?: string;
   buyTax: number;
   sellTax: number;
-  maxWalletPercent?: number;
-  maxTxPercent?: number;
-  tradingDelayBlocks?: number;
-  antiBotBlocks?: number;
-  reflectionFee?: number;
 }
 
 export interface AbiItem {
@@ -59,7 +54,7 @@ export interface LiquidityDetails {
   slippage: number;
   pairType: 'native' | 'token';
   pairToken?: TokenPair;
-  dex: 'uniswap_v2' | 'uniswap_v3' | 'quickswap';
+  dex: 'uniswap_v2' | 'uniswap_v3';
   priceRatio: PriceRatio;
   percentageOfSupply: number;
   feeTier?: 100 | 500 | 3000 | 10000;

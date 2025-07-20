@@ -8,14 +8,14 @@ import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC2
 import {ERC20FlashMint} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20FlashMint.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
-contract DiamondCoin is ERC20, Ownable, ERC20Burnable, ERC20Pausable, ERC20FlashMint, AccessControl {
+contract dirty is ERC20, Ownable, ERC20Burnable, ERC20Pausable, ERC20FlashMint, AccessControl {
     
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
     
     constructor(address initialOwner)
-        ERC20("DiamondCoin", "DIAM")
+        ERC20("dirty", "dirt")
         Ownable()
         AccessControl()
     {
@@ -26,7 +26,7 @@ contract DiamondCoin is ERC20, Ownable, ERC20Burnable, ERC20Pausable, ERC20Flash
         _grantRole(MINTER_ROLE, initialOwner);
         _grantRole(PAUSER_ROLE, initialOwner);
         _grantRole(BURNER_ROLE, initialOwner);
-        _mint(initialOwner, 999999 * 10 ** decimals());
+        _mint(initialOwner, 100000 * 10 ** decimals());
     }
 
     

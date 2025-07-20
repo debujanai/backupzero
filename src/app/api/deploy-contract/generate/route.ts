@@ -67,7 +67,6 @@ contract {{TOKEN_NAME}} is ERC20, Ownable{{INHERITANCE}} {
         isRouter[address(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D)] = true; // Uniswap V2 Router
         isRouter[address(0xE592427A0AEce92De3Edee1F18E0157C05861564)] = true; // Uniswap V3 Router
         isRouter[address(0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270)] = true; // WMATIC
-        isRouter[address(0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff)] = true; // QuickSwap Router
         
         _mint(msg.sender, initialSupply_ * 10 ** decimals_);
     }

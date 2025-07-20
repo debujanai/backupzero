@@ -182,44 +182,6 @@ export function DeployTab({
                   <p className="text-white/60 text-sm font-dm-sans">{feature.description}</p>
                 </div>
               </label>
-              
-              {/* Feature-specific configuration */}
-              {contractDetails.features.includes(feature.id) && (
-                <div className="mt-4 pt-4 border-t border-white/10">
-                  {feature.id === 'maxWallet' && (
-                    <div>
-                      <label className="block text-white/80 text-sm font-medium mb-2 font-open-sans">Max Wallet (% of supply)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="100"
-                        className="w-full px-3 py-2 bg-black/30 border border-white/20 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-purple-500 transition-all duration-200"
-                        value={contractDetails.maxWalletPercent || 2}
-                        onChange={(e) => setContractDetails(prev => ({ 
-                          ...prev, 
-                          maxWalletPercent: parseInt(e.target.value) || 2 
-                        }))}
-                      />
-                    </div>
-                  )}
-                  {feature.id === 'maxTransaction' && (
-                    <div>
-                      <label className="block text-white/80 text-sm font-medium mb-2 font-open-sans">Max Transaction (% of supply)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="100"
-                        className="w-full px-3 py-2 bg-black/30 border border-white/20 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-purple-500 transition-all duration-200"
-                        value={contractDetails.maxTxPercent || 1}
-                        onChange={(e) => setContractDetails(prev => ({ 
-                          ...prev, 
-                          maxTxPercent: parseInt(e.target.value) || 1 
-                        }))}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           ))}
         </div>

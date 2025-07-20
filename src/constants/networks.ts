@@ -18,8 +18,8 @@ export const NETWORK_CONFIG = {
     symbol: 'MATIC',
     rpcUrl: 'https://polygon-rpc.com',
     blockExplorer: 'https://polygonscan.com',
-    routerAddress: '0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff',
-    factoryAddress: '0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32',
+    routerAddress: '0xedf6066a2b290C185783862C7F4776A2C8077AD1',
+    factoryAddress: '0x9e5a52f57b3038f1b8eee45f28b3c1967e22799c',
     positionManagerAddress: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88',
     factoryV3Address: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
     priceFeed: '0xAB594600376Ec9fD91F8e885dADF0CE036862dE0'
@@ -107,11 +107,8 @@ export const FEATURES = [
   { id: 'mintable', name: 'Mintable', description: 'Allow owner to mint new tokens after deployment' },
   { id: 'burnable', name: 'Burnable', description: 'Allow token holders to burn their tokens' },
   { id: 'pausable', name: 'Pausable', description: 'Allow owner to pause all token transfers' },
-  { id: 'ownable', name: 'Ownable', description: 'Add ownership functionality (recommended)' },
-  { id: 'maxWallet', name: 'Max Wallet', description: 'Limit maximum wallet holdings (anti-whale)' },
-  { id: 'maxTransaction', name: 'Max Transaction', description: 'Limit maximum transaction amount' },
-  { id: 'antiBot', name: 'Anti-Bot Protection', description: 'Protection against bot trading in first blocks' },
-  { id: 'tradingDelay', name: 'Trading Delay', description: 'Delay trading start after deployment' },
-  { id: 'blacklist', name: 'Blacklist', description: 'Ability to blacklist addresses' },
-  { id: 'reflection', name: 'Reflection Rewards', description: 'Reward holders with automatic reflections' }
+  { id: 'access control', name: 'Access Control', description: 'Use role-based access control instead of simple ownership' },
+  { id: 'flash minting', name: 'Flash Minting', description: 'Enable flash loans for this token' },
+  { id: 'permit', name: 'Permit', description: 'Enable gasless approvals using EIP-2612' },
+  { id: 'capped supply', name: 'Capped Supply', description: 'Set a maximum supply limit for the token' }
 ]; 

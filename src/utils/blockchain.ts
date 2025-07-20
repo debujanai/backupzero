@@ -105,12 +105,12 @@ export const getFactoryV3Address = (chainId: number): string => {
   return network ? network.factoryV3Address : '';
 };
 
-export const getAvailableDEXs = (chainId: number): Array<'uniswap_v2' | 'uniswap_v3' | 'quickswap'> => {
+export const getAvailableDEXs = (chainId: number): Array<'uniswap_v2' | 'uniswap_v3'> => {
   switch (chainId) {
     case 1: // Ethereum
       return ['uniswap_v2', 'uniswap_v3'];
     case 137: // Polygon
-      return ['uniswap_v2', 'uniswap_v3', 'quickswap'];
+      return ['uniswap_v2', 'uniswap_v3'];
     case 56: // BSC
       return ['uniswap_v2']; // PancakeSwap uses V2
     case 8453: // Base

@@ -9,7 +9,7 @@ export function useContractDeployment() {
     symbol: '',
     decimals: '18',
     totalSupply: '',
-    features: ['ownable'], // Always include ownable by default
+    features: ['burnable'], // Default to burnable since Ownable is always present
     optimizationLevel: 'standard',
     logoUrl: '',
     description: '',
@@ -37,9 +37,9 @@ export function useContractDeployment() {
     const randomIndex = Math.floor(Math.random() * randomNames.length);
     const randomSupply = Math.floor(Math.random() * 900000000) + 100000000; // 100M to 1B
     
-    // Select realistic default features
-    const defaultFeatures = ['ownable', 'burnable']; // Always include ownable
-    const optionalFeatures = ['maxWallet', 'maxTransaction', 'antiBot'];
+    // Select realistic default features from the new OpenZeppelin features
+    const defaultFeatures = ['burnable']; // Basic features
+    const optionalFeatures = ['pausable', 'access control', 'permit'];
     const selectedOptional = optionalFeatures.filter(() => Math.random() > 0.5);
     
     setContractDetails(prev => ({
@@ -84,12 +84,6 @@ export function useContractDeployment() {
         description: contractDetails.description,
         buyTax: contractDetails.buyTax,
         sellTax: contractDetails.sellTax,
-        // Feature configuration parameters
-        maxWalletPercent: contractDetails.maxWalletPercent,
-        maxTxPercent: contractDetails.maxTxPercent,
-        tradingDelayBlocks: contractDetails.tradingDelayBlocks,
-        antiBotBlocks: contractDetails.antiBotBlocks,
-        reflectionFee: contractDetails.reflectionFee,
         chainId: chainId
       };
 
