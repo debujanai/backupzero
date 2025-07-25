@@ -24,6 +24,7 @@ export interface DeploymentResponse {
   abi: AbiItem[];
   bytecode: string;
   logoUrl?: string;
+  savedContractPath?: string;
 }
 
 export interface DeploymentResult {
