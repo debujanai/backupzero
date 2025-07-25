@@ -67,6 +67,17 @@ export const NETWORK_CONFIG = {
     positionManagerAddress: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88',
     factoryV3Address: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
     priceFeed: '0x13e3Ee699D1909E989722E753853AE30b17e08c5'
+  },
+  11155111: {
+    name: 'Sepolia',
+    symbol: 'ETH',
+    rpcUrl: 'https://sepolia.infura.io/v3/013026c83db84ec49fb9ed5c473cede0',
+    blockExplorer: 'https://sepolia.etherscan.io',
+    routerAddress: '0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3',
+    factoryAddress: '0xF62c03E08ada871A0bEb309762E260a7a6a880E6',
+    positionManagerAddress: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88',
+    factoryV3Address: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
+    priceFeed: '' // No Chainlink price feed for Sepolia
   }
 };
 
@@ -100,6 +111,11 @@ export const TOKEN_PAIRS: Record<number, TokenPair[]> = {
     { symbol: 'USDC', name: 'USD Coin', address: '0x7F5c764cBc14f9669B88837ca1490cCa17c31607', decimals: 6 },
     { symbol: 'USDT', name: 'Tether USD', address: '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58', decimals: 6 },
     { symbol: 'DAI', name: 'Dai Stablecoin', address: '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1', decimals: 18 },
+  ],
+  11155111: [ // Sepolia
+    { symbol: 'USDC', name: 'USD Coin (Testnet)', address: '0x65aFADD39029741B3b8f0756952C74678c9cEC93', decimals: 6 },
+    { symbol: 'USDT', name: 'Tether USD (Testnet)', address: '0x509Ee0d083DdF8AC028f2a56731412edd63223B9', decimals: 6 },
+    { symbol: 'WETH', name: 'Wrapped Ether', address: '0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6', decimals: 18 },
   ]
 };
 

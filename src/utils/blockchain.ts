@@ -119,6 +119,8 @@ export const getAvailableDEXs = (chainId: number): Array<'uniswap_v2' | 'uniswap
       return ['uniswap_v2', 'uniswap_v3'];
     case 10: // Optimism
       return ['uniswap_v2', 'uniswap_v3'];
+    case 11155111: // Sepolia
+      return ['uniswap_v2', 'uniswap_v3'];
     default:
       return ['uniswap_v2'];
   }
@@ -272,6 +274,8 @@ export const getUniswapNetworkName = (chainId: number): string => {
       return 'base';
     case 56:
       return 'bnb';
+    case 11155111:
+      return 'sepolia';
     default:
       return 'ethereum';
   }

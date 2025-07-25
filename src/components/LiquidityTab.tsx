@@ -58,22 +58,6 @@ export function LiquidityTab({
   const [privateProvider, setPrivateProvider] = useState<ethers.JsonRpcProvider | null>(null);
   const [privateWallet, setPrivateWallet] = useState<ethers.Wallet | null>(null);
 
-  // Automated buying state
-  const [autoBuyEnabled, setAutoBuyEnabled] = useState(false);
-  const [autoBuyWallets, setAutoBuyWallets] = useState([
-    { privateKey: '', maticAmount: '', enabled: false },
-    { privateKey: '', maticAmount: '', enabled: false }
-  ]);
-  const [isAutoBuying, setIsAutoBuying] = useState(false);
-  const [autoBuyResults, setAutoBuyResults] = useState<Array<{
-    walletIndex: number;
-    address: string;
-    success: boolean;
-    txHash?: string;
-    error?: string;
-    amountReceived?: string;
-  }>>([]);
-
   // Token management state
   const [liquidityTokenAddress, setLiquidityTokenAddress] = useState('');
   const [liquidityTokenDetails, setLiquidityTokenDetails] = useState<any>(null);
@@ -90,524 +74,6 @@ export function LiquidityTab({
     positionMinting: 'idle'
   });
 
-  // Bundle transactions state
-  const [bundleTransactions, setBundleTransactions] = useState(false);
-  const [isBundling, setIsBundling] = useState(false);
-  const [bundleResults, setBundleResults] = useState<{
-    bundleHash?: string;
-    liquidityTxHash?: string;
-    buyTxHashes: string[];
-    error?: string;
-  } | null>(null);
-
-  // Browser-compatible transaction bundling
-  // Instead of using Flashbots relay directly (which requires backend support),
-  // we'll simulate the bundling by sending transactions in rapid succession
-  
-  // Execute bundled transactions locally with ultra-aggressive anti-sniper approach
-  const executeLocalBundle = async () => {
-    if (!privateWallet || !privateProvider) {
-      alert('Please connect your private wallet first');
-      return;
-    }
-
-    // Use either deployed token or manually entered token
-    const tokenAddress = liquidityTokenDetails?.address || deploymentResult?.address;
-    if (!tokenAddress) {
-      alert('Please deploy a contract or enter a token address first');
-      return;
-    }
-
-    if (!liquidityDetails.tokenAmount || !liquidityDetails.pairAmount) {
-      alert('Please enter token and pair amounts');
-      return;
-    }
-
-    setIsBundling(true);
-    setBundleResults(null);
-    setLiquidityError('');
-    setLiquiditySuccess('');
-
-    try {
-      // Step 1: Prepare all transactions in advance
-      console.log("ANTI-SNIPER MODE: Preparing all transactions before execution");
-      
-      const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, privateWallet);
-      const tokenDecimals = liquidityTokenDetails?.decimals || parseInt(contractDetails.decimals);
-      const tokenAmount = ethers.parseUnits(liquidityDetails.tokenAmount, tokenDecimals);
-      const userAddress = await privateWallet.getAddress();
-
-      // Array to store all transaction hashes
-      const txHashes: string[] = [];
-      let liquidityTxHash = '';
-      
-      // Ultra-high gas settings to outbid snipers
-      const PRIORITY_GAS = ethers.parseUnits('200', 'gwei');  // Extremely high priority fee
-      const MAX_FEE = ethers.parseUnits('500', 'gwei');       // Extremely high max fee
-      
-      // Step 2: Prepare buy transactions in advance (before liquidity)
-      let buyerWallets: Array<{
-        wallet: ethers.Wallet;
-        tx: ethers.TransactionRequest;
-        amountIn: bigint;
-      }> = [];
-      
-      if (autoBuyEnabled) {
-        console.log("ANTI-SNIPER MODE: Pre-preparing buy transactions");
-        
-        // Create all buy transactions in advance
-        for (const wallet of autoBuyWallets) {
-          if (!wallet.enabled || !wallet.privateKey || !wallet.maticAmount) continue;
-          
-          try {
-            // Create custom provider with RPC URL for this chain
-            const rpcUrl = getRpcUrl(chainId);
-            const customProvider = new ethers.JsonRpcProvider(rpcUrl);
-            
-            // Create wallet from private key with custom provider
-            const buyerWallet = new ethers.Wallet(wallet.privateKey, customProvider);
-            const buyerAddress = await buyerWallet.getAddress();
-            
-            // Check if wallet has enough balance
-            const amountIn = ethers.parseEther(wallet.maticAmount);
-            const balance = await customProvider.getBalance(buyerAddress);
-            
-            if (balance < amountIn) {
-              console.log(`Skipping wallet with insufficient balance: ${buyerAddress}`);
-              continue;
-            }
-            
-            // Create V2 buy transaction
-            const routerAddress = getRouterAddress(chainId);
-            const router = new ethers.Contract(routerAddress, UNISWAP_V2_ROUTER_ABI, buyerWallet);
-            
-            // Get WETH address
-            const wethAddress = await router.WETH();
-            
-            // Build path
-            const path = [wethAddress, tokenAddress];
-            
-            // We'll use minimum output of 1 wei to ensure transaction goes through
-            // This is necessary since there's no liquidity yet to calculate expected output
-            const amountOutMin = BigInt(1);
-            const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
-            
-            // Prepare the swap transaction
-            const swapTx: ethers.TransactionRequest = {
-              to: routerAddress,
-              value: amountIn,
-              data: router.interface.encodeFunctionData('swapExactETHForTokens', [
-                amountOutMin,
-                path,
-                buyerAddress,
-                deadline
-              ]),
-              gasLimit: BigInt(500000), // High gas limit
-              maxFeePerGas: MAX_FEE,
-              maxPriorityFeePerGas: PRIORITY_GAS,
-              nonce: await customProvider.getTransactionCount(buyerAddress)
-            };
-            
-            // Store wallet and tx for later execution
-            buyerWallets.push({
-              wallet: buyerWallet,
-              tx: swapTx,
-              amountIn
-            });
-            
-            console.log(`Prepared buy transaction for wallet: ${buyerAddress}`);
-          } catch (error) {
-            console.error('Error preparing buy transaction:', error);
-          }
-        }
-      }
-      
-      // Step 3: Handle approvals and add liquidity
-      if (liquidityDetails.dex === 'uniswap_v2') {
-        const routerAddress = getRouterAddress(chainId);
-        console.log(`Using router address: ${routerAddress} for chain ID: ${chainId}`);
-        
-        const router = new ethers.Contract(routerAddress, ROUTER_ABI, privateWallet);
-        
-        // Verify token balance
-        const tokenBalance = await tokenContract.balanceOf(userAddress);
-        console.log(`Token balance: ${ethers.formatUnits(tokenBalance, tokenDecimals)} ${liquidityTokenDetails?.symbol || contractDetails.symbol}`);
-        
-        if (tokenBalance < tokenAmount) {
-          throw new Error(`Insufficient token balance. Required: ${liquidityDetails.tokenAmount}, Available: ${ethers.formatUnits(tokenBalance, tokenDecimals)}`);
-        }
-        
-        // Check if approval is needed
-        const allowance = await tokenContract.allowance(userAddress, routerAddress);
-        console.log(`Current allowance: ${ethers.formatUnits(allowance, tokenDecimals)}`);
-        
-        if (allowance < tokenAmount) {
-          console.log('ANTI-SNIPER MODE: Sending approval with ultra-high gas');
-          
-          try {
-            // Send approval transaction with ultra-high gas price
-            const approveTx = await tokenContract.approve(
-              routerAddress, 
-              ethers.MaxUint256, // Approve maximum amount to avoid future approvals
-              { 
-                gasLimit: BigInt(300000),
-                maxFeePerGas: MAX_FEE,
-                maxPriorityFeePerGas: PRIORITY_GAS
-              }
-            );
-            
-            console.log('Approval transaction sent:', approveTx.hash);
-            // Wait for approval to be mined
-            const approveReceipt = await approveTx.wait();
-            console.log('Approval confirmed, status:', approveReceipt.status);
-            txHashes.push(approveTx.hash);
-            
-            // Double check allowance after approval
-            const newAllowance = await tokenContract.allowance(userAddress, routerAddress);
-            console.log(`New allowance after approval: ${ethers.formatUnits(newAllowance, tokenDecimals)}`);
-            
-            if (newAllowance < tokenAmount) {
-              throw new Error('Approval failed - allowance not increased');
-            }
-          } catch (approveError) {
-            console.error('Approval transaction failed:', approveError);
-            throw new Error(`Approval failed: ${(approveError as Error).message}`);
-          }
-        }
-        
-        // Step 4: Add liquidity with ultra-high gas price
-        if (liquidityDetails.pairType === 'native') {
-          const nativeAmount = ethers.parseEther(liquidityDetails.pairAmount);
-          const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 minutes
-
-          // Make tokenAmount mutable
-          let tokenAmount = ethers.parseUnits(liquidityDetails.tokenAmount, tokenDecimals);
-          let minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-          let minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-
-          // Check if wallet has enough balance
-          const balance = await privateProvider.getBalance(userAddress);
-          console.log(`Native balance: ${ethers.formatEther(balance)} ${getNetworkSymbol(chainId)}`);
-          
-          if (balance < nativeAmount) {
-            throw new Error(`Insufficient balance. Required: ${liquidityDetails.pairAmount} ${getNetworkSymbol(chainId)}, Available: ${ethers.formatEther(balance)} ${getNetworkSymbol(chainId)}`);
-          }
-
-          console.log('ANTI-SNIPER MODE: Adding liquidity with ultra-high gas');
-          
-          try {
-            // Check if the router contract is valid by checking if it has the addLiquidityETH method
-            if (!router.addLiquidityETH) {
-              throw new Error('Invalid router contract - addLiquidityETH method not found');
-            }
-            
-            // Check if pair already exists by trying to get the pair directly from known factory addresses
-            let pairExists = false;
-            let token0 = '';
-            let token1 = '';
-            let reserve0 = BigInt(0);
-            let reserve1 = BigInt(0);
-            
-            try {
-              // Common factory addresses for different chains
-              let factoryAddress = '';
-              if (chainId === 1) { // Ethereum Mainnet
-                factoryAddress = '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f'; // Uniswap V2 Factory
-              } else if (chainId === 137) { // Polygon
-                factoryAddress = '0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32'; // QuickSwap Factory
-              } else if (chainId === 56) { // BSC
-                factoryAddress = '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73'; // PancakeSwap Factory
-              }
-              
-              if (factoryAddress) {
-                // Get the factory contract
-                const factoryAbi = [
-                  "function getPair(address tokenA, address tokenB) external view returns (address pair)"
-                ];
-                const factory = new ethers.Contract(factoryAddress, factoryAbi, privateProvider || provider);
-                
-                // Get WETH/WMATIC/BNB address based on chain
-                let wethAddress = '';
-                if (chainId === 1) {
-                  wethAddress = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'; // WETH on Ethereum
-                } else if (chainId === 137) {
-                  wethAddress = '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270'; // WMATIC on Polygon
-                } else if (chainId === 56) {
-                  wethAddress = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'; // WBNB on BSC
-                }
-                
-                if (wethAddress) {
-                  // Get the pair address
-                  const pairAddress = await factory.getPair(tokenAddress, wethAddress).catch(() => null);
-                  
-                  if (pairAddress && pairAddress !== ethers.ZeroAddress) {
-                    console.log(`Pair already exists at ${pairAddress}`);
-                    pairExists = true;
-                    
-                    // Get the pair contract to check reserves
-                    const pairAbi = [
-                      "function token0() external view returns (address)",
-                      "function token1() external view returns (address)",
-                      "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)"
-                    ];
-                    const pairContract = new ethers.Contract(pairAddress, pairAbi, privateProvider || provider);
-                    
-                    // Get tokens in the pair
-                    token0 = await pairContract.token0();
-                    token1 = await pairContract.token1();
-                    
-                    // Get reserves
-                    const reserves = await pairContract.getReserves();
-                    reserve0 = reserves[0];
-                    reserve1 = reserves[1];
-                    
-                    console.log(`Pair reserves: ${ethers.formatUnits(reserve0)} (token0: ${token0}), ${ethers.formatUnits(reserve1)} (token1: ${token1})`);
-                    
-                    // Determine which token is which in the pair
-                    const tokenIsToken0 = token0.toLowerCase() === tokenAddress.toLowerCase();
-                    const tokenReserve = tokenIsToken0 ? reserve0 : reserve1;
-                    const ethReserve = tokenIsToken0 ? reserve1 : reserve0;
-                    
-                    console.log(`Token reserve: ${ethers.formatUnits(tokenReserve, tokenDecimals)}, ETH reserve: ${ethers.formatEther(ethReserve)}`);
-                    
-                    // Calculate the price ratio
-                    if (ethReserve > 0 && tokenReserve > 0) {
-                      // If adding to existing pair, we need to match the current price ratio
-                      // Calculate the expected token amount based on the ETH amount and current ratio
-                      const currentRatio = Number(tokenReserve) / Number(ethReserve);
-                      const expectedTokenAmount = BigInt(Math.floor(Number(nativeAmount) * currentRatio));
-                      
-                      console.log(`Current price ratio: ${currentRatio} tokens per ETH`);
-                      console.log(`You're providing: ${ethers.formatEther(nativeAmount)} ETH and ${ethers.formatUnits(tokenAmount, tokenDecimals)} tokens`);
-                      console.log(`Expected token amount for this ETH: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)}`);
-                      
-                      // Check if the provided token amount is close enough to the expected amount
-                      const tolerance = 0.05; // 5% tolerance
-                      const minExpected = expectedTokenAmount * BigInt(Math.floor((1 - tolerance) * 100)) / BigInt(100);
-                      const maxExpected = expectedTokenAmount * BigInt(Math.floor((1 + tolerance) * 100)) / BigInt(100);
-                      
-                      if (tokenAmount < minExpected || tokenAmount > maxExpected) {
-                        console.log(`WARNING: Your token amount is not matching the current price ratio.`);
-                        console.log(`Recommended token amount: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)}`);
-                        
-                        // Ask user if they want to adjust the token amount
-                        const adjustAmount = confirm(
-                          `Your token amount doesn't match the current price ratio in the pool.\n\n` +
-                          `Current ratio: ${currentRatio} tokens per ETH\n` +
-                          `You're providing: ${ethers.formatUnits(tokenAmount, tokenDecimals)} tokens for ${ethers.formatEther(nativeAmount)} ETH\n` +
-                          `Recommended: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)} tokens\n\n` +
-                          `Would you like to adjust your token amount to match the current price ratio?`
-                        );
-                        
-                        if (adjustAmount) {
-                          // Adjust the token amount to match the current price ratio
-                          tokenAmount = expectedTokenAmount;
-                          console.log(`Adjusted token amount to: ${ethers.formatUnits(tokenAmount, tokenDecimals)}`);
-                        } else {
-                          throw new Error(
-                            `Cannot add liquidity with the provided amounts. Please adjust your token amount to approximately ` +
-                            `${ethers.formatUnits(expectedTokenAmount, tokenDecimals)} to match the current price ratio.`
-                          );
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            } catch (pairCheckError) {
-              console.error('Error checking for existing pair:', pairCheckError);
-              // Continue with liquidity addition even if pair check fails
-            }
-            
-            // Recalculate min amounts after potential adjustment
-            minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-            minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-            
-            // Try estimating gas first to catch errors
-            const gasEstimate = await router.addLiquidityETH.estimateGas(
-              tokenAddress,
-              tokenAmount,
-              minTokenAmount,
-              minNativeAmount,
-              userAddress,
-              deadline,
-              { value: nativeAmount }
-            ).catch((e: any) => {
-              console.error('Gas estimation failed:', e);
-              // Check if the error message contains information about the reversion
-              const errorMessage = e.message || '';
-              if (errorMessage.includes('INSUFFICIENT_A_AMOUNT')) {
-                throw new Error(
-                  'Gas estimation failed: INSUFFICIENT_A_AMOUNT. This usually means your token amount is too low ' +
-                  'compared to the ETH amount for the current price ratio in the pool.'
-                );
-              } else if (errorMessage.includes('INSUFFICIENT_B_AMOUNT')) {
-                throw new Error(
-                  'Gas estimation failed: INSUFFICIENT_B_AMOUNT. This usually means your ETH amount is too low ' +
-                  'compared to the token amount for the current price ratio in the pool.'
-                );
-              } else if (errorMessage.includes('insufficient')) {
-                throw new Error('Gas estimation failed: Insufficient funds');
-              } else if (errorMessage.includes('transfer amount exceeds balance')) {
-                throw new Error('Gas estimation failed: Transfer amount exceeds balance');
-              } else {
-                throw new Error(`Gas estimation failed: ${errorMessage}`);
-              }
-            });
-            
-            console.log(`Gas estimate for liquidity: ${gasEstimate}`);
-
-            // Send liquidity transaction with ultra-high gas price
-            const liquidityTx = await router.addLiquidityETH(
-              tokenAddress,
-              tokenAmount,
-              minTokenAmount,
-              minNativeAmount,
-              userAddress,
-              deadline,
-              { 
-                value: nativeAmount,
-                gasLimit: BigInt(gasEstimate.toString()) * BigInt(12) / BigInt(10), // Add 20% buffer
-                maxFeePerGas: MAX_FEE,
-                maxPriorityFeePerGas: PRIORITY_GAS
-              }
-            );
-            
-            console.log('ANTI-SNIPER MODE: Liquidity transaction sent:', liquidityTx.hash);
-            liquidityTxHash = liquidityTx.hash;
-            
-            // ANTI-SNIPER TECHNIQUE: Send buy transactions IMMEDIATELY after liquidity tx is sent
-            // Don't wait for liquidity to be confirmed - this reduces the gap between transactions
-            if (buyerWallets.length > 0) {
-              console.log('ANTI-SNIPER MODE: Executing buy transactions IMMEDIATELY');
-              
-              // Execute all buy transactions in parallel without waiting for liquidity confirmation
-              const buyPromises = buyerWallets.map(async ({ wallet, tx }, i) => {
-                try {
-                  console.log(`ANTI-SNIPER MODE: Sending buy transaction ${i} immediately`);
-                  const sentTx = await wallet.sendTransaction(tx);
-                  console.log(`Buy transaction ${i} sent:`, sentTx.hash);
-                  return sentTx.hash;
-                } catch (error) {
-                  console.error(`Error sending buy transaction ${i}:`, error);
-                  return null;
-                }
-              });
-              
-              // Collect buy transaction hashes
-              const buyHashes = await Promise.all(buyPromises);
-              const validBuyHashes = buyHashes.filter(hash => hash !== null) as string[];
-              
-              console.log('ANTI-SNIPER MODE: All buy transactions sent:', validBuyHashes);
-              
-              // Now wait for liquidity transaction to be mined
-              console.log('Now waiting for liquidity transaction confirmation...');
-              const receipt = await liquidityTx.wait();
-              console.log('Liquidity confirmed, status:', receipt.status, 'block:', receipt.blockNumber);
-              
-              if (receipt.status === 0) {
-                throw new Error('Liquidity transaction failed on-chain');
-              }
-              
-              txHashes.push(liquidityTx.hash);
-              
-              // Wait for buy transactions to be mined and collect results
-              const buyResults = await Promise.all(
-                validBuyHashes.map(async (hash, i) => {
-                  try {
-                    const receipt = await provider!.getTransactionReceipt(hash);
-                    const blockDiff = receipt ? receipt.blockNumber - (receipt.blockNumber || 0) : 'unknown';
-                    console.log(`Buy transaction ${i} confirmed in block: ${receipt?.blockNumber}, ` +
-                                `block difference: ${blockDiff}`);
-                    return {
-                      success: receipt?.status === 1,
-                      hash,
-                      blockNumber: receipt?.blockNumber
-                    };
-                  } catch (error) {
-                    console.error(`Error getting receipt for buy transaction ${i}:`, error);
-                    return { success: false, hash, error: (error as Error).message };
-                  }
-                })
-              );
-              
-              console.log('All buy transactions completed:', buyResults);
-              
-              // Update the UI with buy transaction hashes
-              setBundleResults({
-                liquidityTxHash,
-                buyTxHashes: validBuyHashes,
-              });
-            } else {
-              // If no buy transactions, just wait for liquidity to be mined
-              const receipt = await liquidityTx.wait();
-              console.log('Liquidity confirmed, status:', receipt.status);
-              
-              if (receipt.status === 0) {
-                throw new Error('Liquidity transaction failed on-chain');
-              }
-              
-              txHashes.push(liquidityTx.hash);
-              
-              setBundleResults({
-                liquidityTxHash,
-                buyTxHashes: [],
-              });
-            }
-            
-            setLiquiditySuccess(`All transactions completed successfully!`);
-          } catch (liquidityError) {
-            console.error('Liquidity transaction failed:', liquidityError);
-            
-            // Try to get more information about the error
-            let errorMessage = `Liquidity addition failed: ${(liquidityError as Error).message}`;
-            
-            // Check for common errors
-            const errorString = (liquidityError as Error).message.toLowerCase();
-            if (errorString.includes('transfer amount exceeds balance')) {
-              errorMessage = 'Token transfer failed: amount exceeds balance';
-            } else if (errorString.includes('insufficient')) {
-              errorMessage = 'Insufficient funds for transaction';
-            } else if (errorString.includes('pair exists')) {
-              errorMessage = 'Pair already exists - try using a different token or pair';
-            } else if (errorString.includes('k')) {
-              errorMessage = 'Liquidity addition failed: K value error (imbalanced reserves)';
-            } else if (errorString.includes('expired')) {
-              errorMessage = 'Transaction deadline expired';
-            } else if (errorString.includes('slippage')) {
-              errorMessage = 'Price changed - try increasing slippage tolerance';
-            }
-            
-            throw new Error(errorMessage);
-          }
-        } else {
-          // Token-to-token liquidity (similar implementation)
-          // ...
-        }
-      } else if (liquidityDetails.dex === 'uniswap_v3') {
-        // Similar implementation for V3
-        // ...
-      }
-
-    } catch (error: any) {
-      console.error('Bundle error:', error);
-      
-      let errorMessage = 'Failed to execute bundled transactions';
-      if (error.message) {
-        errorMessage = error.message;
-      }
-      
-      setBundleResults({
-        buyTxHashes: [],
-        error: errorMessage
-      });
-      
-      setLiquidityError(errorMessage);
-    } finally {
-      setIsBundling(false);
-    }
-  };
-
   // Refs
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -620,6 +86,7 @@ export function LiquidityTab({
       case 8453: return '0x2626664c2603336E57B271c5C0b26F421741e481'; // Base
       case 42161: return '0xE592427A0AEce92De3Edee1F18E0157C05861564'; // Arbitrum
       case 10: return '0xE592427A0AEce92De3Edee1F18E0157C05861564'; // Optimism
+      case 11155111: return '0xE592427A0AEce92De3Edee1F18E0157C05861564'; // Sepolia
       default: return '0xE592427A0AEce92De3Edee1F18E0157C05861564';
     }
   };
@@ -632,6 +99,7 @@ export function LiquidityTab({
       case 8453: return '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a'; // Base
       case 42161: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'; // Arbitrum
       case 10: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'; // Optimism
+      case 11155111: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'; // Sepolia
       default: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6';
     }
   };
@@ -644,6 +112,7 @@ export function LiquidityTab({
       case 8453: return '0x33128a8fC17869897dcE68Ed026d694621f6FDfD'; // Base
       case 42161: return '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Arbitrum
       case 10: return '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Optimism
+      case 11155111: return '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Sepolia
       default: return '0x1F98431c8aD98523631AE4a59f267346ea31F984';
     }
   };
@@ -669,223 +138,6 @@ export function LiquidityTab({
   ];
 
   const V3_FEE_TIERS = [100, 500, 3000, 10000]; // 0.01%, 0.05%, 0.3%, 1%
-
-  // Automated buying functions
-  const executeAutoBuy = async (tokenAddress: string) => {
-    if (!autoBuyEnabled) return;
-
-    setIsAutoBuying(true);
-    setAutoBuyResults([]);
-
-    const results: typeof autoBuyResults = [];
-
-    for (let i = 0; i < autoBuyWallets.length; i++) {
-      const wallet = autoBuyWallets[i];
-      if (!wallet.enabled || !wallet.privateKey || !wallet.maticAmount) continue;
-
-      try {
-        // Create custom provider with RPC URL for this chain
-        const rpcUrl = getRpcUrl(chainId);
-        const customProvider = new ethers.JsonRpcProvider(rpcUrl);
-        
-        // Create wallet from private key with custom provider
-        const buyerWallet = new ethers.Wallet(wallet.privateKey, customProvider);
-        const buyerAddress = await buyerWallet.getAddress();
-
-        // Check wallet balance
-        const balance = await customProvider.getBalance(buyerAddress);
-        const requiredAmount = ethers.parseEther(wallet.maticAmount);
-        
-        if (balance < requiredAmount) {
-          results.push({
-            walletIndex: i,
-            address: buyerAddress,
-            success: false,
-            error: `Insufficient balance. Required: ${wallet.maticAmount} ${getNetworkSymbol(chainId)}, Available: ${ethers.formatEther(balance)} ${getNetworkSymbol(chainId)}`
-          });
-          continue;
-        }
-
-        // Execute the buy
-        const buyResult = await executeBuyForWallet(buyerWallet, customProvider, tokenAddress, wallet.maticAmount);
-        results.push({
-          walletIndex: i,
-          address: buyerAddress,
-          success: buyResult.success,
-          txHash: buyResult.txHash,
-          error: buyResult.error,
-          amountReceived: buyResult.amountReceived
-        });
-
-      } catch (error) {
-        results.push({
-          walletIndex: i,
-          address: 'Invalid private key',
-          success: false,
-          error: (error as Error).message
-        });
-      }
-    }
-
-    setAutoBuyResults(results);
-    setIsAutoBuying(false);
-  };
-
-  const executeBuyForWallet = async (
-    wallet: ethers.Wallet, 
-    customProvider: ethers.JsonRpcProvider,
-    tokenAddress: string, 
-    maticAmount: string
-  ): Promise<{ success: boolean; txHash?: string; error?: string; amountReceived?: string }> => {
-    try {
-      const amountIn = ethers.parseEther(maticAmount);
-      const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 minutes
-
-      // Try V3 first
-      const v3Result = await executeBuyV3(wallet, customProvider, tokenAddress, amountIn, deadline);
-      if (v3Result.success) {
-        return v3Result;
-      }
-
-      // Fallback to V2
-      const v2Result = await executeBuyV2(wallet, customProvider, tokenAddress, amountIn, deadline);
-      return v2Result;
-
-    } catch (error) {
-      return { success: false, error: (error as Error).message };
-    }
-  };
-
-  const executeBuyV3 = async (
-    wallet: ethers.Wallet, 
-    customProvider: ethers.JsonRpcProvider,
-    tokenAddress: string, 
-    amountIn: bigint, 
-    deadline: number
-  ): Promise<{ success: boolean; txHash?: string; error?: string; amountReceived?: string }> => {
-    try {
-      const v3RouterAddress = getV3RouterAddress(chainId);
-      const factoryAddress = getV3FactoryAddress(chainId);
-      const quoterAddress = getV3QuoterAddress(chainId);
-      
-      const v3Router = new ethers.Contract(v3RouterAddress, UNISWAP_V3_ROUTER_ABI, wallet);
-      const factory = new ethers.Contract(factoryAddress, UNISWAP_V3_FACTORY_ABI, customProvider);
-      const quoter = new ethers.Contract(quoterAddress, UNISWAP_V3_QUOTER_ABI, customProvider);
-      
-      // Get WETH address
-      const wethAddress = await v3Router.WETH9();
-      
-      // Find best fee tier
-      let bestFee = 0;
-      let bestOutput = BigInt(0);
-      
-      for (const fee of V3_FEE_TIERS) {
-        try {
-          const poolAddress = await factory.getPool(wethAddress, tokenAddress, fee);
-          if (poolAddress === ethers.ZeroAddress) continue;
-          
-          const quote = await quoter.quoteExactInputSingle.staticCall(
-            wethAddress,
-            tokenAddress,
-            fee,
-            amountIn,
-            0
-          );
-          
-          if (quote > bestOutput) {
-            bestOutput = quote;
-            bestFee = fee;
-          }
-        } catch (error) {
-          continue;
-        }
-      }
-      
-      if (bestFee === 0) {
-        return { success: false, error: 'No V3 liquidity found' };
-      }
-
-      // Calculate minimum amount out (2% slippage)
-      const amountOutMin = (bestOutput * BigInt(98)) / BigInt(100);
-
-      // Execute swap
-      const swapTx = await v3Router.exactInputSingle({
-        tokenIn: wethAddress,
-        tokenOut: tokenAddress,
-        fee: bestFee,
-        recipient: wallet.address,
-        deadline: deadline,
-        amountIn: amountIn,
-        amountOutMinimum: amountOutMin,
-        sqrtPriceLimitX96: 0
-      }, { value: amountIn });
-
-      const receipt = await swapTx.wait();
-      
-      if (receipt?.status === 1) {
-        return { 
-          success: true, 
-          txHash: swapTx.hash,
-          amountReceived: ethers.formatUnits(bestOutput, 18) // Assuming 18 decimals
-        };
-      } else {
-        return { success: false, error: 'Transaction failed' };
-      }
-
-    } catch (error) {
-      return { success: false, error: (error as Error).message };
-    }
-  };
-
-  const executeBuyV2 = async (
-    wallet: ethers.Wallet, 
-    customProvider: ethers.JsonRpcProvider,
-    tokenAddress: string, 
-    amountIn: bigint, 
-    deadline: number
-  ): Promise<{ success: boolean; txHash?: string; error?: string; amountReceived?: string }> => {
-    try {
-      const routerAddress = getRouterAddress(chainId);
-      const router = new ethers.Contract(routerAddress, UNISWAP_V2_ROUTER_ABI, wallet);
-      
-      // Get WETH address
-      const wethAddress = await router.WETH();
-      
-      // Build path
-      const path = [wethAddress, tokenAddress];
-      
-      // Get amounts out
-      const amounts = await router.getAmountsOut(amountIn, path);
-      const amountOut = amounts[amounts.length - 1];
-      
-      // Calculate minimum amount out (2% slippage)
-      const amountOutMin = (amountOut * BigInt(98)) / BigInt(100);
-
-      // Execute swap
-      const swapTx = await router.swapExactETHForTokens(
-        amountOutMin,
-        path,
-        wallet.address,
-        deadline,
-        { value: amountIn }
-      );
-
-      const receipt = await swapTx.wait();
-      
-      if (receipt?.status === 1) {
-        return { 
-          success: true, 
-          txHash: swapTx.hash,
-          amountReceived: ethers.formatUnits(amountOut, 18) // Assuming 18 decimals
-        };
-      } else {
-        return { success: false, error: 'Transaction failed' };
-      }
-
-    } catch (error) {
-      return { success: false, error: (error as Error).message };
-    }
-  };
 
   const validatePrivateKey = (privateKey: string): boolean => {
     try {
@@ -1020,151 +272,10 @@ export function LiquidityTab({
           const nativeAmount = ethers.parseEther(liquidityDetails.pairAmount);
           const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 minutes
 
-          // Make tokenAmount mutable
-          let tokenAmount = ethers.parseUnits(liquidityDetails.tokenAmount, tokenDecimals);
-          let minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-          let minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+          const minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+          const minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
 
-          // Check if wallet has enough balance
-          const balance = await privateProvider.getBalance(userAddress);
-          console.log(`Native balance: ${ethers.formatEther(balance)} ${getNetworkSymbol(chainId)}`);
-          
-          if (balance < nativeAmount) {
-            throw new Error(`Insufficient balance. Required: ${liquidityDetails.pairAmount} ${getNetworkSymbol(chainId)}, Available: ${ethers.formatEther(balance)} ${getNetworkSymbol(chainId)}`);
-          }
-
-          console.log('ANTI-SNIPER MODE: Adding liquidity with ultra-high gas');
-          
-          try {
-            // Check if the router contract is valid by checking if it has the addLiquidityETH method
-            if (!router.addLiquidityETH) {
-              throw new Error('Invalid router contract - addLiquidityETH method not found');
-            }
-            
-            // Check if pair already exists by trying to get the pair directly from known factory addresses
-            let pairExists = false;
-            let token0 = '';
-            let token1 = '';
-            let reserve0 = BigInt(0);
-            let reserve1 = BigInt(0);
-            
-            try {
-              // Common factory addresses for different chains
-              let factoryAddress = '';
-              if (chainId === 1) { // Ethereum Mainnet
-                factoryAddress = '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f'; // Uniswap V2 Factory
-              } else if (chainId === 137) { // Polygon
-                factoryAddress = '0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32'; // QuickSwap Factory
-              } else if (chainId === 56) { // BSC
-                factoryAddress = '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73'; // PancakeSwap Factory
-              }
-              
-              if (factoryAddress) {
-                // Get the factory contract
-                const factoryAbi = [
-                  "function getPair(address tokenA, address tokenB) external view returns (address pair)"
-                ];
-                const factory = new ethers.Contract(factoryAddress, factoryAbi, privateProvider || provider);
-                
-                // Get WETH/WMATIC/BNB address based on chain
-                let wethAddress = '';
-                if (chainId === 1) {
-                  wethAddress = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'; // WETH on Ethereum
-                } else if (chainId === 137) {
-                  wethAddress = '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270'; // WMATIC on Polygon
-                } else if (chainId === 56) {
-                  wethAddress = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'; // WBNB on BSC
-                }
-                
-                if (wethAddress) {
-                  // Get the pair address
-                  const pairAddress = await factory.getPair(tokenAddress, wethAddress).catch(() => null);
-                  
-                  if (pairAddress && pairAddress !== ethers.ZeroAddress) {
-                    console.log(`Pair already exists at ${pairAddress}`);
-                    pairExists = true;
-                    
-                    // Get the pair contract to check reserves
-                    const pairAbi = [
-                      "function token0() external view returns (address)",
-                      "function token1() external view returns (address)",
-                      "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)"
-                    ];
-                    const pairContract = new ethers.Contract(pairAddress, pairAbi, privateProvider || provider);
-                    
-                    // Get tokens in the pair
-                    token0 = await pairContract.token0();
-                    token1 = await pairContract.token1();
-                    
-                    // Get reserves
-                    const reserves = await pairContract.getReserves();
-                    reserve0 = reserves[0];
-                    reserve1 = reserves[1];
-                    
-                    console.log(`Pair reserves: ${ethers.formatUnits(reserve0)} (token0: ${token0}), ${ethers.formatUnits(reserve1)} (token1: ${token1})`);
-                    
-                    // Determine which token is which in the pair
-                    const tokenIsToken0 = token0.toLowerCase() === tokenAddress.toLowerCase();
-                    const tokenReserve = tokenIsToken0 ? reserve0 : reserve1;
-                    const ethReserve = tokenIsToken0 ? reserve1 : reserve0;
-                    
-                    console.log(`Token reserve: ${ethers.formatUnits(tokenReserve, tokenDecimals)}, ETH reserve: ${ethers.formatEther(ethReserve)}`);
-                    
-                    // Calculate the price ratio
-                    if (ethReserve > 0 && tokenReserve > 0) {
-                      // If adding to existing pair, we need to match the current price ratio
-                      // Calculate the expected token amount based on the ETH amount and current ratio
-                      const currentRatio = Number(tokenReserve) / Number(ethReserve);
-                      const expectedTokenAmount = BigInt(Math.floor(Number(nativeAmount) * currentRatio));
-                      
-                      console.log(`Current price ratio: ${currentRatio} tokens per ETH`);
-                      console.log(`You're providing: ${ethers.formatEther(nativeAmount)} ETH and ${ethers.formatUnits(tokenAmount, tokenDecimals)} tokens`);
-                      console.log(`Expected token amount for this ETH: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)}`);
-                      
-                      // Check if the provided token amount is close enough to the expected amount
-                      const tolerance = 0.05; // 5% tolerance
-                      const minExpected = expectedTokenAmount * BigInt(Math.floor((1 - tolerance) * 100)) / BigInt(100);
-                      const maxExpected = expectedTokenAmount * BigInt(Math.floor((1 + tolerance) * 100)) / BigInt(100);
-                      
-                      if (tokenAmount < minExpected || tokenAmount > maxExpected) {
-                        console.log(`WARNING: Your token amount is not matching the current price ratio.`);
-                        console.log(`Recommended token amount: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)}`);
-                        
-                        // Ask user if they want to adjust the token amount
-                        const adjustAmount = confirm(
-                          `Your token amount doesn't match the current price ratio in the pool.\n\n` +
-                          `Current ratio: ${currentRatio} tokens per ETH\n` +
-                          `You're providing: ${ethers.formatUnits(tokenAmount, tokenDecimals)} tokens for ${ethers.formatEther(nativeAmount)} ETH\n` +
-                          `Recommended: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)} tokens\n\n` +
-                          `Would you like to adjust your token amount to match the current price ratio?`
-                        );
-                        
-                        if (adjustAmount) {
-                          // Adjust the token amount to match the current price ratio
-                          tokenAmount = expectedTokenAmount;
-                          console.log(`Adjusted token amount to: ${ethers.formatUnits(tokenAmount, tokenDecimals)}`);
-                        } else {
-                          throw new Error(
-                            `Cannot add liquidity with the provided amounts. Please adjust your token amount to approximately ` +
-                            `${ethers.formatUnits(expectedTokenAmount, tokenDecimals)} to match the current price ratio.`
-                          );
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            } catch (pairCheckError) {
-              console.error('Error checking for existing pair:', pairCheckError);
-              // Continue with liquidity addition even if pair check fails
-            }
-            
-            // Recalculate min amounts after potential adjustment
-            minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-            minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-            
-            // Try estimating gas first to catch errors
-            const gasEstimate = await router.addLiquidityETH.estimateGas(
+          const tx = await router.addLiquidityETH(
             tokenAddress,
             tokenAmount,
             minTokenAmount,
@@ -1172,158 +283,53 @@ export function LiquidityTab({
             userAddress,
             deadline,
             { value: nativeAmount }
-            ).catch((e: any) => {
-              console.error('Gas estimation failed:', e);
-              // Check if the error message contains information about the reversion
-              const errorMessage = e.message || '';
-              if (errorMessage.includes('INSUFFICIENT_A_AMOUNT')) {
-                throw new Error(
-                  'Gas estimation failed: INSUFFICIENT_A_AMOUNT. This usually means your token amount is too low ' +
-                  'compared to the ETH amount for the current price ratio in the pool.'
-                );
-              } else if (errorMessage.includes('INSUFFICIENT_B_AMOUNT')) {
-                throw new Error(
-                  'Gas estimation failed: INSUFFICIENT_B_AMOUNT. This usually means your ETH amount is too low ' +
-                  'compared to the token amount for the current price ratio in the pool.'
-                );
-              } else if (errorMessage.includes('insufficient')) {
-                throw new Error('Gas estimation failed: Insufficient funds');
-              } else if (errorMessage.includes('transfer amount exceeds balance')) {
-                throw new Error('Gas estimation failed: Transfer amount exceeds balance');
-              } else {
-                throw new Error(`Gas estimation failed: ${errorMessage}`);
-              }
-            });
-            
-            console.log(`Gas estimate for liquidity: ${gasEstimate}`);
+          );
 
-            // Send liquidity transaction with ultra-high gas price
-            const liquidityTx = await router.addLiquidityETH(
-              tokenAddress,
-              tokenAmount,
-              minTokenAmount,
-              minNativeAmount,
-              userAddress,
-              deadline,
-              { 
-                value: nativeAmount,
-                gasLimit: BigInt(gasEstimate.toString()) * BigInt(12) / BigInt(10), // Add 20% buffer
-                maxFeePerGas: MAX_FEE,
-                maxPriorityFeePerGas: PRIORITY_GAS
-              }
-            );
-            
-            console.log('ANTI-SNIPER MODE: Liquidity transaction sent:', liquidityTx.hash);
-            liquidityTxHash = liquidityTx.hash;
-            
-            // ANTI-SNIPER TECHNIQUE: Send buy transactions IMMEDIATELY after liquidity tx is sent
-            // Don't wait for liquidity to be confirmed - this reduces the gap between transactions
-            if (buyerWallets.length > 0) {
-              console.log('ANTI-SNIPER MODE: Executing buy transactions IMMEDIATELY');
-              
-              // Execute all buy transactions in parallel without waiting for liquidity confirmation
-              const buyPromises = buyerWallets.map(async ({ wallet, tx }, i) => {
-                try {
-                  console.log(`ANTI-SNIPER MODE: Sending buy transaction ${i} immediately`);
-                  const sentTx = await wallet.sendTransaction(tx);
-                  console.log(`Buy transaction ${i} sent:`, sentTx.hash);
-                  return sentTx.hash;
-                } catch (error) {
-                  console.error(`Error sending buy transaction ${i}:`, error);
-                  return null;
-                }
-              });
-              
-              // Collect buy transaction hashes
-              const buyHashes = await Promise.all(buyPromises);
-              const validBuyHashes = buyHashes.filter(hash => hash !== null) as string[];
-              
-              console.log('ANTI-SNIPER MODE: All buy transactions sent:', validBuyHashes);
-              
-              // Now wait for liquidity transaction to be mined
-              console.log('Now waiting for liquidity transaction confirmation...');
-              const receipt = await liquidityTx.wait();
-              console.log('Liquidity confirmed, status:', receipt.status, 'block:', receipt.blockNumber);
-              
-              if (receipt.status === 0) {
-                throw new Error('Liquidity transaction failed on-chain');
-              }
-              
-              txHashes.push(liquidityTx.hash);
-              
-              // Wait for buy transactions to be mined and collect results
-              const buyResults = await Promise.all(
-                validBuyHashes.map(async (hash, i) => {
-                  try {
-                    const receipt = await provider!.getTransactionReceipt(hash);
-                    const blockDiff = receipt ? receipt.blockNumber - (receipt.blockNumber || 0) : 'unknown';
-                    console.log(`Buy transaction ${i} confirmed in block: ${receipt?.blockNumber}, ` +
-                                `block difference: ${blockDiff}`);
-                    return {
-                      success: receipt?.status === 1,
-                      hash,
-                      blockNumber: receipt?.blockNumber
-                    };
-                  } catch (error) {
-                    console.error(`Error getting receipt for buy transaction ${i}:`, error);
-                    return { success: false, hash, error: (error as Error).message };
-                  }
-                })
-              );
-              
-              console.log('All buy transactions completed:', buyResults);
-              
-              // Update the UI with buy transaction hashes
-              setBundleResults({
-                liquidityTxHash,
-                buyTxHashes: validBuyHashes,
-              });
+          const receipt = await tx.wait();
+          setLiquiditySuccess(`Liquidity added successfully! Transaction: ${receipt.hash}`);
         } else {
-              // If no buy transactions, just wait for liquidity to be mined
-              const receipt = await liquidityTx.wait();
-              console.log('Liquidity confirmed, status:', receipt.status);
-              
-              if (receipt.status === 0) {
-                throw new Error('Liquidity transaction failed on-chain');
-              }
-              
-              txHashes.push(liquidityTx.hash);
-              
-              setBundleResults({
-                liquidityTxHash,
-                buyTxHashes: [],
-              });
-            }
-            
-            setLiquiditySuccess(`All transactions completed successfully!`);
-          } catch (liquidityError) {
-            console.error('Liquidity transaction failed:', liquidityError);
-            
-            // Try to get more information about the error
-            let errorMessage = `Liquidity addition failed: ${(liquidityError as Error).message}`;
-            
-            // Check for common errors
-            const errorString = (liquidityError as Error).message.toLowerCase();
-            if (errorString.includes('transfer amount exceeds balance')) {
-              errorMessage = 'Token transfer failed: amount exceeds balance';
-            } else if (errorString.includes('insufficient')) {
-              errorMessage = 'Insufficient funds for transaction';
-            } else if (errorString.includes('pair exists')) {
-              errorMessage = 'Pair already exists - try using a different token or pair';
-            } else if (errorString.includes('k')) {
-              errorMessage = 'Liquidity addition failed: K value error (imbalanced reserves)';
-            } else if (errorString.includes('expired')) {
-              errorMessage = 'Transaction deadline expired';
-            } else if (errorString.includes('slippage')) {
-              errorMessage = 'Price changed - try increasing slippage tolerance';
-            }
-            
-            throw new Error(errorMessage);
+          // Token-to-token liquidity
+          if (!liquidityDetails.pairToken) {
+            throw new Error('Pair token not selected');
           }
-        } else {
-          // Token-to-token liquidity (similar implementation)
-          // ...
+
+          const pairTokenContract = new ethers.Contract(
+            liquidityDetails.pairToken.address,
+            ERC20_ABI,
+            signer
+          );
+          
+          const pairAmount = ethers.parseUnits(
+            liquidityDetails.pairAmount,
+            liquidityDetails.pairToken.decimals
+          );
+
+          // Approve pair token
+          const pairAllowance = await pairTokenContract.allowance(userAddress, routerAddress);
+          if (pairAllowance < pairAmount) {
+            const approveTx = await pairTokenContract.approve(routerAddress, pairAmount);
+            await approveTx.wait();
+          }
+
+          const deadline = Math.floor(Date.now() / 1000) + 1200;
+          const minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+          const minPairAmount = pairAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+
+          const tx = await router.addLiquidity(
+            tokenAddress,
+            liquidityDetails.pairToken.address,
+            tokenAmount,
+            pairAmount,
+            minTokenAmount,
+            minPairAmount,
+            userAddress,
+            deadline
+          );
+
+          const receipt = await tx.wait();
+          setLiquiditySuccess(`Liquidity added successfully! Transaction: ${receipt.hash}`);
         }
+        
       } else if (liquidityDetails.dex === 'uniswap_v3') {
         // Uniswap V3 liquidity with multicall
         const positionManagerAddress = getPositionManagerAddress(chainId);
@@ -1483,17 +489,11 @@ export function LiquidityTab({
 
         // Execute multicall
         const tx = await positionManager.multicall(calldata, { value: ethValue });
-          const receipt = await tx.wait();
+        const receipt = await tx.wait();
         
         setTransactionStatus(prev => ({ ...prev, positionMinting: 'complete' }));
-          setLiquiditySuccess(`Liquidity added successfully! Transaction: ${receipt.hash}`);
+        setLiquiditySuccess(`Liquidity added successfully! Transaction: ${receipt.hash}`);
         
-        // Trigger automated buying after successful V3 liquidity addition
-        if (autoBuyEnabled) {
-          setTimeout(() => {
-            executeAutoBuy(tokenAddress);
-          }, 2000); // Wait 2 seconds after liquidity is added
-        }
       }
 
     } catch (error: any) {
@@ -1533,12 +533,13 @@ export function LiquidityTab({
   // Hardcoded RPC URLs by chain ID
   const getRpcUrl = (chainId: number): string => {
     switch (chainId) {
-      case 1: return 'https://mainnet.infura.io/v3/013026c83db84ec49fb9ed5c473cede0'; // Ethereum
+      case 1: return 'https://mainnet.infura.io/v3/9bb89e8a800d438f89fcb188341a52c3'; // Ethereum
       case 137: return 'https://polygon-mainnet.infura.io/v3/f28e7f77067d437d838bf32201e1386e'; // Polygon
       case 56: return 'https://bsc-dataseed.binance.org'; // BSC
       case 8453: return 'https://mainnet.base.org'; // Base
       case 42161: return 'https://arb1.arbitrum.io/rpc'; // Arbitrum
       case 10: return 'https://mainnet.optimism.io'; // Optimism
+      case 11155111: return 'https://sepolia.infura.io/v3/013026c83db84ec49fb9ed5c473cede0'; // Sepolia
       default: return 'https://polygon-rpc.com'; // Default to Polygon
     }
   };
@@ -1650,310 +651,70 @@ export function LiquidityTab({
           const nativeAmount = ethers.parseEther(liquidityDetails.pairAmount);
           const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 minutes
 
-          // Make tokenAmount mutable
-          let tokenAmount = ethers.parseUnits(liquidityDetails.tokenAmount, tokenDecimals);
-          let minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-          let minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+          const minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+          const minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
 
           // Check if wallet has enough balance
           const balance = await privateProvider.getBalance(userAddress);
-          console.log(`Native balance: ${ethers.formatEther(balance)} ${getNetworkSymbol(chainId)}`);
-          
           if (balance < nativeAmount) {
             throw new Error(`Insufficient balance. Required: ${liquidityDetails.pairAmount} ${getNetworkSymbol(chainId)}, Available: ${ethers.formatEther(balance)} ${getNetworkSymbol(chainId)}`);
           }
 
-          console.log('ANTI-SNIPER MODE: Adding liquidity with ultra-high gas');
-          
-          try {
-            // Check if the router contract is valid by checking if it has the addLiquidityETH method
-            if (!router.addLiquidityETH) {
-              throw new Error('Invalid router contract - addLiquidityETH method not found');
-            }
-            
-            // Check if pair already exists by trying to get the pair directly from known factory addresses
-            let pairExists = false;
-            let token0 = '';
-            let token1 = '';
-            let reserve0 = BigInt(0);
-            let reserve1 = BigInt(0);
-            
-            try {
-              // Common factory addresses for different chains
-              let factoryAddress = '';
-              if (chainId === 1) { // Ethereum Mainnet
-                factoryAddress = '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f'; // Uniswap V2 Factory
-              } else if (chainId === 137) { // Polygon
-                factoryAddress = '0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32'; // QuickSwap Factory
-              } else if (chainId === 56) { // BSC
-                factoryAddress = '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73'; // PancakeSwap Factory
-              }
-              
-              if (factoryAddress) {
-                // Get the factory contract
-                const factoryAbi = [
-                  "function getPair(address tokenA, address tokenB) external view returns (address pair)"
-                ];
-                const factory = new ethers.Contract(factoryAddress, factoryAbi, privateProvider || provider);
-                
-                // Get WETH/WMATIC/BNB address based on chain
-                let wethAddress = '';
-                if (chainId === 1) {
-                  wethAddress = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'; // WETH on Ethereum
-                } else if (chainId === 137) {
-                  wethAddress = '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270'; // WMATIC on Polygon
-                } else if (chainId === 56) {
-                  wethAddress = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'; // WBNB on BSC
-                }
-                
-                if (wethAddress) {
-                  // Get the pair address
-                  const pairAddress = await factory.getPair(tokenAddress, wethAddress).catch(() => null);
-                  
-                  if (pairAddress && pairAddress !== ethers.ZeroAddress) {
-                    console.log(`Pair already exists at ${pairAddress}`);
-                    pairExists = true;
-                    
-                    // Get the pair contract to check reserves
-                    const pairAbi = [
-                      "function token0() external view returns (address)",
-                      "function token1() external view returns (address)",
-                      "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)"
-                    ];
-                    const pairContract = new ethers.Contract(pairAddress, pairAbi, privateProvider || provider);
-                    
-                    // Get tokens in the pair
-                    token0 = await pairContract.token0();
-                    token1 = await pairContract.token1();
-                    
-                    // Get reserves
-                    const reserves = await pairContract.getReserves();
-                    reserve0 = reserves[0];
-                    reserve1 = reserves[1];
-                    
-                    console.log(`Pair reserves: ${ethers.formatUnits(reserve0)} (token0: ${token0}), ${ethers.formatUnits(reserve1)} (token1: ${token1})`);
-                    
-                    // Determine which token is which in the pair
-                    const tokenIsToken0 = token0.toLowerCase() === tokenAddress.toLowerCase();
-                    const tokenReserve = tokenIsToken0 ? reserve0 : reserve1;
-                    const ethReserve = tokenIsToken0 ? reserve1 : reserve0;
-                    
-                    console.log(`Token reserve: ${ethers.formatUnits(tokenReserve, tokenDecimals)}, ETH reserve: ${ethers.formatEther(ethReserve)}`);
-                    
-                    // Calculate the price ratio
-                    if (ethReserve > 0 && tokenReserve > 0) {
-                      // If adding to existing pair, we need to match the current price ratio
-                      // Calculate the expected token amount based on the ETH amount and current ratio
-                      const currentRatio = Number(tokenReserve) / Number(ethReserve);
-                      const expectedTokenAmount = BigInt(Math.floor(Number(nativeAmount) * currentRatio));
-                      
-                      console.log(`Current price ratio: ${currentRatio} tokens per ETH`);
-                      console.log(`You're providing: ${ethers.formatEther(nativeAmount)} ETH and ${ethers.formatUnits(tokenAmount, tokenDecimals)} tokens`);
-                      console.log(`Expected token amount for this ETH: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)}`);
-                      
-                      // Check if the provided token amount is close enough to the expected amount
-                      const tolerance = 0.05; // 5% tolerance
-                      const minExpected = expectedTokenAmount * BigInt(Math.floor((1 - tolerance) * 100)) / BigInt(100);
-                      const maxExpected = expectedTokenAmount * BigInt(Math.floor((1 + tolerance) * 100)) / BigInt(100);
-                      
-                      if (tokenAmount < minExpected || tokenAmount > maxExpected) {
-                        console.log(`WARNING: Your token amount is not matching the current price ratio.`);
-                        console.log(`Recommended token amount: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)}`);
-                        
-                        // Ask user if they want to adjust the token amount
-                        const adjustAmount = confirm(
-                          `Your token amount doesn't match the current price ratio in the pool.\n\n` +
-                          `Current ratio: ${currentRatio} tokens per ETH\n` +
-                          `You're providing: ${ethers.formatUnits(tokenAmount, tokenDecimals)} tokens for ${ethers.formatEther(nativeAmount)} ETH\n` +
-                          `Recommended: ${ethers.formatUnits(expectedTokenAmount, tokenDecimals)} tokens\n\n` +
-                          `Would you like to adjust your token amount to match the current price ratio?`
-                        );
-                        
-                        if (adjustAmount) {
-                          // Adjust the token amount to match the current price ratio
-                          tokenAmount = expectedTokenAmount;
-                          console.log(`Adjusted token amount to: ${ethers.formatUnits(tokenAmount, tokenDecimals)}`);
-                        } else {
-                          throw new Error(
-                            `Cannot add liquidity with the provided amounts. Please adjust your token amount to approximately ` +
-                            `${ethers.formatUnits(expectedTokenAmount, tokenDecimals)} to match the current price ratio.`
-                          );
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            } catch (pairCheckError) {
-              console.error('Error checking for existing pair:', pairCheckError);
-              // Continue with liquidity addition even if pair check fails
-            }
-            
-            // Recalculate min amounts after potential adjustment
-            minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-            minNativeAmount = nativeAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
-            
-            // Try estimating gas first to catch errors
-            const gasEstimate = await router.addLiquidityETH.estimateGas(
-              tokenAddress,
-              tokenAmount,
-              minTokenAmount,
-              minNativeAmount,
-              userAddress,
-              deadline,
-              { value: nativeAmount }
-            ).catch((e: any) => {
-              console.error('Gas estimation failed:', e);
-              // Check if the error message contains information about the reversion
-              const errorMessage = e.message || '';
-              if (errorMessage.includes('INSUFFICIENT_A_AMOUNT')) {
-                throw new Error(
-                  'Gas estimation failed: INSUFFICIENT_A_AMOUNT. This usually means your token amount is too low ' +
-                  'compared to the ETH amount for the current price ratio in the pool.'
-                );
-              } else if (errorMessage.includes('INSUFFICIENT_B_AMOUNT')) {
-                throw new Error(
-                  'Gas estimation failed: INSUFFICIENT_B_AMOUNT. This usually means your ETH amount is too low ' +
-                  'compared to the token amount for the current price ratio in the pool.'
-                );
-              } else if (errorMessage.includes('insufficient')) {
-                throw new Error('Gas estimation failed: Insufficient funds');
-              } else if (errorMessage.includes('transfer amount exceeds balance')) {
-                throw new Error('Gas estimation failed: Transfer amount exceeds balance');
-              } else {
-                throw new Error(`Gas estimation failed: ${errorMessage}`);
-              }
-            });
-            
-            console.log(`Gas estimate for liquidity: ${gasEstimate}`);
+          const tx = await router.addLiquidityETH(
+            tokenAddress,
+            tokenAmount,
+            minTokenAmount,
+            minNativeAmount,
+            userAddress,
+            deadline,
+            { value: nativeAmount }
+          );
 
-            // Send liquidity transaction with ultra-high gas price
-            const liquidityTx = await router.addLiquidityETH(
-              tokenAddress,
-              tokenAmount,
-              minTokenAmount,
-              minNativeAmount,
-              userAddress,
-              deadline,
-              { 
-                value: nativeAmount,
-                gasLimit: BigInt(gasEstimate.toString()) * BigInt(12) / BigInt(10), // Add 20% buffer
-                maxFeePerGas: MAX_FEE,
-                maxPriorityFeePerGas: PRIORITY_GAS
-              }
-            );
-            
-            console.log('ANTI-SNIPER MODE: Liquidity transaction sent:', liquidityTx.hash);
-            liquidityTxHash = liquidityTx.hash;
-            
-            // ANTI-SNIPER TECHNIQUE: Send buy transactions IMMEDIATELY after liquidity tx is sent
-            // Don't wait for liquidity to be confirmed - this reduces the gap between transactions
-            if (buyerWallets.length > 0) {
-              console.log('ANTI-SNIPER MODE: Executing buy transactions IMMEDIATELY');
-              
-              // Execute all buy transactions in parallel without waiting for liquidity confirmation
-              const buyPromises = buyerWallets.map(async ({ wallet, tx }, i) => {
-                try {
-                  console.log(`ANTI-SNIPER MODE: Sending buy transaction ${i} immediately`);
-                  const sentTx = await wallet.sendTransaction(tx);
-                  console.log(`Buy transaction ${i} sent:`, sentTx.hash);
-                  return sentTx.hash;
-                } catch (error) {
-                  console.error(`Error sending buy transaction ${i}:`, error);
-                  return null;
-                }
-              });
-              
-              // Collect buy transaction hashes
-              const buyHashes = await Promise.all(buyPromises);
-              const validBuyHashes = buyHashes.filter(hash => hash !== null) as string[];
-              
-              console.log('ANTI-SNIPER MODE: All buy transactions sent:', validBuyHashes);
-              
-              // Now wait for liquidity transaction to be mined
-              console.log('Now waiting for liquidity transaction confirmation...');
-              const receipt = await liquidityTx.wait();
-              console.log('Liquidity confirmed, status:', receipt.status, 'block:', receipt.blockNumber);
-              
-              if (receipt.status === 0) {
-                throw new Error('Liquidity transaction failed on-chain');
-              }
-              
-              txHashes.push(liquidityTx.hash);
-              
-              // Wait for buy transactions to be mined and collect results
-              const buyResults = await Promise.all(
-                validBuyHashes.map(async (hash, i) => {
-                  try {
-                    const receipt = await provider!.getTransactionReceipt(hash);
-                    const blockDiff = receipt ? receipt.blockNumber - (receipt.blockNumber || 0) : 'unknown';
-                    console.log(`Buy transaction ${i} confirmed in block: ${receipt?.blockNumber}, ` +
-                                `block difference: ${blockDiff}`);
-                    return {
-                      success: receipt?.status === 1,
-                      hash,
-                      blockNumber: receipt?.blockNumber
-                    };
-                  } catch (error) {
-                    console.error(`Error getting receipt for buy transaction ${i}:`, error);
-                    return { success: false, hash, error: (error as Error).message };
-                  }
-                })
-              );
-              
-              console.log('All buy transactions completed:', buyResults);
-              
-              // Update the UI with buy transaction hashes
-              setBundleResults({
-                liquidityTxHash,
-                buyTxHashes: validBuyHashes,
-              });
-            } else {
-              // If no buy transactions, just wait for liquidity to be mined
-              const receipt = await liquidityTx.wait();
-              console.log('Liquidity confirmed, status:', receipt.status);
-              
-              if (receipt.status === 0) {
-                throw new Error('Liquidity transaction failed on-chain');
-              }
-              
-              txHashes.push(liquidityTx.hash);
-              
-              setBundleResults({
-                liquidityTxHash,
-                buyTxHashes: [],
-              });
-            }
-            
-            setLiquiditySuccess(`All transactions completed successfully!`);
-          } catch (liquidityError) {
-            console.error('Liquidity transaction failed:', liquidityError);
-            
-            // Try to get more information about the error
-            let errorMessage = `Liquidity addition failed: ${(liquidityError as Error).message}`;
-            
-            // Check for common errors
-            const errorString = (liquidityError as Error).message.toLowerCase();
-            if (errorString.includes('transfer amount exceeds balance')) {
-              errorMessage = 'Token transfer failed: amount exceeds balance';
-            } else if (errorString.includes('insufficient')) {
-              errorMessage = 'Insufficient funds for transaction';
-            } else if (errorString.includes('pair exists')) {
-              errorMessage = 'Pair already exists - try using a different token or pair';
-            } else if (errorString.includes('k')) {
-              errorMessage = 'Liquidity addition failed: K value error (imbalanced reserves)';
-            } else if (errorString.includes('expired')) {
-              errorMessage = 'Transaction deadline expired';
-            } else if (errorString.includes('slippage')) {
-              errorMessage = 'Price changed - try increasing slippage tolerance';
-            }
-            
-            throw new Error(errorMessage);
-          }
+          const receipt = await tx.wait();
+          setLiquiditySuccess(`Liquidity added successfully! Transaction: ${receipt.hash}`);
         } else {
-          // Token-to-token liquidity (similar implementation)
-          // ...
+          // Token-to-token liquidity
+          if (!liquidityDetails.pairToken) {
+            throw new Error('Pair token not selected');
+          }
+
+          const pairTokenContract = new ethers.Contract(
+            liquidityDetails.pairToken.address,
+            ERC20_ABI,
+            privateWallet
+          );
+          
+          const pairAmount = ethers.parseUnits(
+            liquidityDetails.pairAmount,
+            liquidityDetails.pairToken.decimals
+          );
+
+          // Approve pair token
+          const pairAllowance = await pairTokenContract.allowance(userAddress, routerAddress);
+          if (pairAllowance < pairAmount) {
+            const approveTx = await pairTokenContract.approve(routerAddress, pairAmount);
+            await approveTx.wait();
+          }
+
+          const deadline = Math.floor(Date.now() / 1000) + 1200;
+          const minTokenAmount = tokenAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+          const minPairAmount = pairAmount * BigInt(100 - Math.floor(liquidityDetails.slippage * 100)) / BigInt(100);
+
+          const tx = await router.addLiquidity(
+            tokenAddress,
+            liquidityDetails.pairToken.address,
+            tokenAmount,
+            pairAmount,
+            minTokenAmount,
+            minPairAmount,
+            userAddress,
+            deadline
+          );
+
+          const receipt = await tx.wait();
+          setLiquiditySuccess(`Liquidity added successfully! Transaction: ${receipt.hash}`);
         }
+        
       } else if (liquidityDetails.dex === 'uniswap_v3') {
         // Uniswap V3 liquidity with multicall
         const positionManagerAddress = getPositionManagerAddress(chainId);
@@ -2124,12 +885,6 @@ export function LiquidityTab({
         setTransactionStatus(prev => ({ ...prev, positionMinting: 'complete' }));
         setLiquiditySuccess(`Liquidity added successfully! Transaction: ${receipt.hash}`);
         
-        // Trigger automated buying after successful V3 liquidity addition
-        if (autoBuyEnabled) {
-          setTimeout(() => {
-            executeAutoBuy(tokenAddress);
-          }, 2000); // Wait 2 seconds after liquidity is added
-        }
       }
 
     } catch (error: any) {
@@ -2416,27 +1171,6 @@ export function LiquidityTab({
                     </div>
                   </div>
                 )}
-                
-                {/* Bundle Transactions Option */}
-                {isPrivateProviderConnected && (
-                  <div className="mt-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <label htmlFor="bundleToggle" className="text-white/80 font-open-sans">
-                        Bundle Liquidity + Auto-Buy (Fast Sequence)
-                      </label>
-                      <input
-                        type="checkbox"
-                        id="bundleToggle"
-                        className="w-5 h-5 text-purple-500 bg-black/50 border-white/20 rounded focus:ring-purple-500 focus:ring-2"
-                        checked={bundleTransactions}
-                        onChange={(e) => setBundleTransactions(e.target.checked)}
-                      />
-                    </div>
-                    <p className="text-white/60 text-xs">
-                      Executes liquidity addition and buys in rapid succession with high gas fees to minimize front-running
-                    </p>
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -2589,51 +1323,12 @@ export function LiquidityTab({
             <div className="mt-6">
               <button 
                 className="w-full px-6 py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white font-semibold rounded-xl transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-purple-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={autoLiquidityEnabled && bundleTransactions ? executeLocalBundle : autoLiquidityEnabled ? addLiquidityWithPrivateKey : addLiquidity}
-                disabled={isAddingLiquidity || isBundling}
+                onClick={autoLiquidityEnabled ? addLiquidityWithPrivateKey : addLiquidity}
+                disabled={isAddingLiquidity}
               >
-                {isBundling ? 'Executing Bundled Transactions...' : 
-                 isAddingLiquidity ? 'Adding Liquidity...' : 
-                 bundleTransactions ? 'Add Liquidity + Auto-Buy (Fast Sequence)' : 'Add Liquidity'}
+                {isAddingLiquidity ? 'Adding Liquidity...' : 'Add Liquidity'}
               </button>
             </div>
-
-            {/* Bundle Results */}
-            {bundleResults && (
-              <div className="mt-6 bg-black/30 rounded-xl p-4 border border-white/10">
-                <h4 className="text-lg font-bold text-white mb-4 font-space-grotesk">Transaction Results</h4>
-                
-                {bundleResults.error ? (
-                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-                    <div className="text-red-400 text-sm">{bundleResults.error}</div>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {bundleResults.liquidityTxHash && (
-                      <div className="bg-black/40 rounded-lg p-3 border border-white/10">
-                        <span className="text-white/60 text-sm font-open-sans">Liquidity Transaction:</span>
-                        <div className="text-purple-300 font-mono text-xs break-all mt-1">
-                          {bundleResults.liquidityTxHash}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {bundleResults.buyTxHashes.length > 0 && (
-                      <div className="bg-black/40 rounded-lg p-3 border border-white/10">
-                        <span className="text-white/60 text-sm font-open-sans">Buy Transactions:</span>
-                        <div className="space-y-2 mt-1">
-                          {bundleResults.buyTxHashes.map((hash, index) => (
-                            <div key={index} className="text-purple-300 font-mono text-xs break-all">
-                              {hash}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Transaction Status */}
             {isAddingLiquidity && renderTransactionStatus()}
@@ -2647,123 +1342,6 @@ export function LiquidityTab({
             {liquidityError && (
               <div className="mt-6 bg-red-500/10 border border-red-500/30 rounded-lg p-4">
                 <div className="text-red-400 text-sm">{liquidityError}</div>
-              </div>
-            )}
-          </div>
-
-          {/* Automated Buying Section */}
-          <div className="bg-black/20 backdrop-blur-xl rounded-2xl border border-white/10 p-6">
-            <h3 className="text-xl font-bold text-white mb-6 font-space-grotesk">Automated Buying</h3>
-            <div className="flex items-center justify-between mb-4">
-              <label htmlFor="autoBuyToggle" className="text-white/80 font-open-sans">Enable Automated Buying</label>
-              <input
-                type="checkbox"
-                id="autoBuyToggle"
-                className="w-5 h-5 text-purple-500 bg-black/50 border-white/20 rounded focus:ring-purple-500 focus:ring-2"
-                checked={autoBuyEnabled}
-                onChange={(e) => setAutoBuyEnabled(e.target.checked)}
-              />
-            </div>
-
-            {autoBuyEnabled && (
-              <div className="space-y-4 mt-6">
-                <h4 className="text-lg font-bold text-white mb-4 font-space-grotesk">Auto-Buy Wallets</h4>
-                {autoBuyWallets.map((wallet, index) => (
-                  <div key={index} className="bg-black/30 rounded-xl p-4 border border-white/10">
-                    <div className="flex items-center justify-between mb-4">
-                      <h5 className="text-white/80 font-medium font-open-sans">Wallet {index + 1}</h5>
-                      <input
-                        type="checkbox"
-                        className="w-4 h-4 text-purple-500 bg-black/50 border-white/20 rounded focus:ring-purple-500 focus:ring-2"
-                        checked={wallet.enabled}
-                        onChange={(e) => {
-                          const newWallets = [...autoBuyWallets];
-                          newWallets[index].enabled = e.target.checked;
-                          setAutoBuyWallets(newWallets);
-                        }}
-                      />
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-white/80 text-sm font-medium mb-2 font-open-sans">Private Key</label>
-                        <input
-                          type="password"
-                          className="w-full px-4 py-3 bg-black/40 border border-white/20 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-purple-500 transition-all duration-200"
-                          value={wallet.privateKey}
-                          onChange={(e) => {
-                            const newWallets = [...autoBuyWallets];
-                            newWallets[index].privateKey = e.target.value;
-                            setAutoBuyWallets(newWallets);
-                          }}
-                          placeholder="Enter private key"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-white/80 text-sm font-medium mb-2 font-open-sans">MATIC/ETH Amount</label>
-                        <input
-                          type="number"
-                          min="0.001"
-                          step="0.001"
-                          className="w-full px-4 py-3 bg-black/40 border border-white/20 rounded-lg text-white placeholder-white/40 focus:outline-none focus:border-purple-500 transition-all duration-200"
-                          value={wallet.maticAmount}
-                          onChange={(e) => {
-                            const newWallets = [...autoBuyWallets];
-                            newWallets[index].maticAmount = e.target.value;
-                            setAutoBuyWallets(newWallets);
-                          }}
-                          placeholder="e.g., 0.1"
-                        />
-                      </div>
-                    </div>
-                    {wallet.privateKey && !validatePrivateKey(wallet.privateKey) && (
-                      <div className="text-red-400 text-sm mt-2">Invalid Private Key</div>
-                    )}
-                  </div>
-                ))}
-                <button 
-                  className="w-full px-6 py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white font-semibold rounded-xl transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-purple-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
-                  onClick={() => executeAutoBuy(liquidityTokenDetails?.address || (deploymentResult?.address || ''))}
-                  disabled={isAutoBuying || !liquidityTokenDetails && !deploymentResult}
-                >
-                  {isAutoBuying ? 'Executing Auto-Buys...' : 'Execute Auto-Buys'}
-                </button>
-
-                {isAutoBuying && (
-                  <div className="mt-6">
-                    <h4 className="text-lg font-bold text-white mb-4 font-space-grotesk">Auto-Buy Results</h4>
-                    <div className="space-y-3">
-                      {autoBuyResults.map((result, index) => (
-                        <div key={index} className={`bg-black/30 rounded-xl p-4 border ${
-                          result.success ? 'border-green-500/30' : 'border-red-500/30'
-                        }`}>
-                          <div className="flex items-center justify-between text-white/80 text-sm font-open-sans">
-                            <span>Wallet {result.walletIndex + 1}: {result.address?.slice(0, 8)}...{result.address?.slice(-6)}</span>
-                            <span className={`font-semibold ${
-                              result.success ? 'text-green-400' : 'text-red-400'
-                            }`}>
-                              {result.success ? 'SUCCESS' : 'FAILED'}
-                            </span>
-                          </div>
-                          {result.txHash && (
-                            <div className="text-white/60 text-xs font-mono break-all mt-2">
-                              Tx: <a href={`https://etherscan.io/tx/${result.txHash}`} target="_blank" rel="noopener noreferrer" className="text-purple-300 hover:underline">{result.txHash}</a>
-                            </div>
-                          )}
-                          {result.amountReceived && (
-                            <div className="text-white/60 text-xs mt-1">
-                              Received: {formatNumber(result.amountReceived)} {liquidityTokenDetails?.symbol || contractDetails.symbol}
-                            </div>
-                          )}
-                          {result.error && (
-                            <div className="text-red-300 text-xs mt-1">
-                              Error: {result.error}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </div>

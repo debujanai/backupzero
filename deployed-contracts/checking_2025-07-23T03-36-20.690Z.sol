@@ -16,27 +16,34 @@ interface IUniswapV2Router02 {
         uint256 deadline
     ) external;
 }
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ERC20FlashMint} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20FlashMint.sol";
+import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
+import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 
-contract TEST is ERC20, Ownable, ERC20Burnable, AccessControl, ERC20FlashMint {
+contract checking is ERC20, Ownable, AccessControl, ERC20FlashMint, ERC20Pausable, ERC20Burnable {
         bool public tradingOpen = false;
     mapping(address => bool) private _isExcludedFromFees;
-    uint256 public buyTax = 1;
-    uint256 public sellTax = 3;
+    event ExcludeFromFees(address indexed account, bool isExcluded);
+    uint256 public BuyFee = 4;
+    uint256 public SellFee = 2;
     address public marketingWallet;
+    address private deployerWallet;
     IUniswapV2Router02 public uniswapV2Router;
     address public uniswapV2Pair;
     bool private swapping;
     mapping(address => bool) private automatedMarketMakerPairs;
+    uint256 public swapTokensAtAmount;
+    uint256 public maxTransactionAmount;
+    uint256 public maxWallet;
+    event SetAutomatedMarketMakerPair(address indexed pair, bool indexed value);
 
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
     
     constructor(address initialOwner)
-        ERC20("TEST", "TOKEN")
+        ERC20("checking", "COSM")
         Ownable()
         AccessControl()
     {
@@ -45,13 +52,20 @@ contract TEST is ERC20, Ownable, ERC20Burnable, AccessControl, ERC20FlashMint {
                 _isExcludedFromFees[initialOwner] = true;
         
         marketingWallet = initialOwner;
+        deployerWallet = initialOwner;
         uniswapV2Router = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D); // Uniswap V2 Router
+
+        // Initialize limits as percentage of supply
+        uint256 totalSupplyValue = 889635997 * 10 ** decimals();
+        maxTransactionAmount = totalSupplyValue * 1 / 100; // 1% of supply
+        maxWallet = totalSupplyValue * 1 / 100; // 1% of supply
+        swapTokensAtAmount = totalSupplyValue * 1 / 100; // 1% of supply
         
         _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
         _grantRole(MINTER_ROLE, initialOwner);
         _grantRole(PAUSER_ROLE, initialOwner);
         _grantRole(BURNER_ROLE, initialOwner);
-        _mint(initialOwner, 1000000 * 10 ** decimals());
+        _mint(initialOwner, 889635997 * 10 ** decimals());
     }
 
     
@@ -61,19 +75,26 @@ contract TEST is ERC20, Ownable, ERC20Burnable, AccessControl, ERC20FlashMint {
 
     function excludeFromFees(address account, bool excluded) external onlyOwner {
         _isExcludedFromFees[account] = excluded;
+        emit ExcludeFromFees(account, excluded);
     }
   
 
     
-    function setTaxes(uint256 _buyTax, uint256 _sellTax) external onlyOwner {
-        require(_buyTax <= 25 && _sellTax <= 25, "Taxes cannot exceed 25%");
-        buyTax = _buyTax;
-        sellTax = _sellTax;
+    function SetFees(uint256 _buyFee, uint256 _sellFee) external onlyOwner {
+        require(_buyFee <= 40 && _sellFee <= 90, "Fees cannot exceed 90%");
+        BuyFee = _buyFee;
+        SellFee = _sellFee;
     }
 
     function setMarketingWallet(address _marketingWallet) external onlyOwner {
         require(_marketingWallet != address(0), "Marketing wallet cannot be zero address");
         marketingWallet = _marketingWallet;
+    }
+    
+    function clearStuckTheEth() external {
+        require(_msgSender() == deployerWallet);
+        require(address(this).balance > 0, "Token: no ETH to clear");
+        payable(msg.sender).transfer(address(this).balance);
     }
     
 
@@ -100,10 +121,52 @@ contract TEST is ERC20, Ownable, ERC20Burnable, AccessControl, ERC20FlashMint {
         );
     }
     
+    function swapBack(uint256 tokens) private {
+        uint256 contractBalance = balanceOf(address(this));
+        
+        if (contractBalance == 0 || tokens == 0) {
+            return;
+        }
+        
+        uint256 tokensToSwap = tokens > contractBalance ? contractBalance : tokens;
+        
+        if (tokensToSwap > swapTokensAtAmount) {
+            tokensToSwap = swapTokensAtAmount;
+        }
+
+        if (tokensToSwap > 0) {
+            swapTokensForEth(tokensToSwap);
+        }
+    }
+    
+    function removeTokensLimits() external onlyOwner {
+        maxTransactionAmount = totalSupply();
+        maxWallet = totalSupply();
+    }
+    
 
     
     function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) {
         _mint(to, amount);
+    }
+
+    
+    function pause() public onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() public onlyRole(PAUSER_ROLE) {
+        _unpause();
+    }
+
+    
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override(ERC20, ERC20Pausable) {
+        super._beforeTokenTransfer(from, to, amount);
+        
+        // Trading status check (moved from _transfer when using pausable)
+        if (!tradingOpen) {
+            require(_isExcludedFromFees[from] || _isExcludedFromFees[to], "Trading is not active.");
+        }
     }
 
     
@@ -120,9 +183,21 @@ contract TEST is ERC20, Ownable, ERC20Burnable, AccessControl, ERC20FlashMint {
             return;
         }
 
-        // Check if trading is open
-        if (!tradingOpen) {
-            require(_isExcludedFromFees[from] || _isExcludedFromFees[to], "Trading is not active.");
+        // This will invoke the pausable check
+        _beforeTokenTransfer(from, to, amount);
+        
+        // Check transaction limits
+        if (from != owner() && to != owner() && to != address(0) && to != address(0xdead) && !swapping) {
+            if (automatedMarketMakerPairs[from] && !_isExcludedFromFees[to]) {
+                require(amount <= maxTransactionAmount, "Buy transfer amount exceeds the maxTransactionAmount.");
+                require(amount + balanceOf(to) <= maxWallet, "Max wallet exceeded");
+            }
+            else if (automatedMarketMakerPairs[to] && !_isExcludedFromFees[from]) {
+                require(amount <= maxTransactionAmount, "Sell transfer amount exceeds the maxTransactionAmount.");
+            }
+            else if (!_isExcludedFromFees[to]) {
+                require(amount + balanceOf(to) <= maxWallet, "Max wallet exceeded");
+            }
         }
 
         // Indicates if fee should be deducted from transfer
@@ -138,10 +213,10 @@ contract TEST is ERC20, Ownable, ERC20Burnable, AccessControl, ERC20FlashMint {
         if (takeFee) {
             if (automatedMarketMakerPairs[to]) {
                 // Sell transfer
-                fees = amount * sellTax / 100;
+                fees = amount * SellFee / 100;
             } else if (automatedMarketMakerPairs[from]) {
                 // Buy transfer
-                fees = amount * buyTax / 100;
+                fees = amount * BuyFee / 100;
             }
             
             if (fees > 0) {
@@ -149,8 +224,20 @@ contract TEST is ERC20, Ownable, ERC20Burnable, AccessControl, ERC20FlashMint {
                 amount = amount - fees;
             }
         }
+        
+        // Process accumulated fees
+        uint256 contractTokenBalance = balanceOf(address(this));
+        bool canSwap = contractTokenBalance > swapTokensAtAmount && !swapping;
+
+        if (canSwap && !automatedMarketMakerPairs[from] && !_isExcludedFromFees[from] && !_isExcludedFromFees[to]) {
+            swapping = true;
+            swapBack(swapTokensAtAmount);
+            swapping = false;
+        }
 
         // Transfer the remaining amount
         super._transfer(from, to, amount);
+        
+        _afterTokenTransfer(from, to, amount);
     }
 }

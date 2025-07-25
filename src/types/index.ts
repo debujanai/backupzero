@@ -111,4 +111,4 @@ export interface TransactionLog {
   decodedData?: { [key: string]: any };
 }
 
-export type TabType = 'dashboard' | 'deploy' | 'liquidity' | 'manage' | 'liquiditylock' | 'swap'; 
+export type TabType = 'dashboard' | 'deploy' | 'liquidity' | 'manage' | 'liquiditylock' | 'swap' | 'enabletrading'; 

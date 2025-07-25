@@ -15,6 +15,7 @@ const CHAIN_MAPPING: Record<string, string> = {
   '0xa4b1': '42161', // Arbitrum
   '0xfa': '250',   // Fantom
   '0x19': '25',    // Cronos
+  '0xaa36a7': '11155111', // Sepolia
 };
 
 const LiquidityLockTab = () => {

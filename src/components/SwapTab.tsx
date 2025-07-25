@@ -55,6 +55,7 @@ const getV3RouterAddress = (chainId: number): string => {
     case 8453: return '0x2626664c2603336E57B271c5C0b26F421741e481'; // Base
     case 42161: return '0xE592427A0AEce92De3Edee1F18E0157C05861564'; // Arbitrum
     case 10: return '0xE592427A0AEce92De3Edee1F18E0157C05861564'; // Optimism
+    case 11155111: return '0xE592427A0AEce92De3Edee1F18E0157C05861564'; // Sepolia
     default: return '0xE592427A0AEce92De3Edee1F18E0157C05861564';
   }
 };
@@ -68,6 +69,7 @@ const getV3QuoterAddress = (chainId: number): string => {
     case 8453: return '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a'; // Base
     case 42161: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'; // Arbitrum
     case 10: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'; // Optimism
+    case 11155111: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6'; // Sepolia
     default: return '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6';
   }
 };
@@ -81,6 +83,7 @@ const getV3FactoryAddress = (chainId: number): string => {
     case 8453: return '0x33128a8fC17869897dcE68Ed026d694621f6FDfD'; // Base
     case 42161: return '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Arbitrum
     case 10: return '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Optimism
+    case 11155111: return '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Sepolia
     default: return '0x1F98431c8aD98523631AE4a59f267346ea31F984';
   }
 };
@@ -955,6 +958,7 @@ export function SwapTab({ provider, signer, account, chainId }: SwapTabProps) {
         case 8453: return `https://basescan.org/tx/${hash}`;
         case 42161: return `https://arbiscan.io/tx/${hash}`;
         case 10: return `https://optimistic.etherscan.io/tx/${hash}`;
+        case 11155111: return `https://sepolia.etherscan.io/tx/${hash}`;
         default: return `https://etherscan.io/tx/${hash}`;
       }
     };

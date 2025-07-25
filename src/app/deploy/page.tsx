@@ -9,6 +9,7 @@ import { DeployTab } from '@/components/DeployTab';
 import { LiquidityTab } from '@/components/LiquidityTab';
 import { ManageTab } from '@/components/ManageTab';
 import { SwapTab } from '@/components/SwapTab';
+import EnableTradingTab from '@/components/EnableTradingTab';
 
 export default function ContractDeploy() {
   // Core state
@@ -59,6 +60,7 @@ export default function ContractDeploy() {
       case 8453: return `https://basescan.org/address/${address}`;
       case 42161: return `https://arbiscan.io/address/${address}`;
       case 10: return `https://optimistic.etherscan.io/address/${address}`;
+      case 11155111: return `https://sepolia.etherscan.io/address/${address}`;
       default: return `https://etherscan.io/address/${address}`;
     }
   };
@@ -72,17 +74,27 @@ export default function ContractDeploy() {
           {activeTab === 'liquidity' && 'Liquidity Management'}
           {activeTab === 'swap' && 'Token Swap'}
           {activeTab === 'manage' && 'Token Management'}
+          {activeTab === 'enabletrading' && 'Enable Trading'}
         </h1>
         <p className="text-white/60 font-dm-sans">
           {activeTab === 'deploy' && 'Deploy your custom ERC-20 token with advanced features'}
           {activeTab === 'liquidity' && 'Add liquidity to decentralized exchanges'}
           {activeTab === 'swap' && 'Swap tokens using Uniswap with detailed transaction tracking'}
           {activeTab === 'manage' && 'Manage your deployed token contracts'}
+          {activeTab === 'enabletrading' && 'Enable trading for your token by calling openTrading()'}
         </p>
       </div>
 
       {/* Tab Content */}
       <div className="bg-black/20 backdrop-blur-xl rounded-2xl border border-white/10 p-8">
+        {/* Add a tab button for Enable Trading */}
+        <div className="flex gap-4 mb-6">
+          <button className={`px-4 py-2 rounded ${activeTab === 'deploy' ? 'bg-purple-600 text-white' : 'bg-white/10 text-white/70'}`} onClick={() => setActiveTab('deploy')}>Deploy</button>
+          <button className={`px-4 py-2 rounded ${activeTab === 'liquidity' ? 'bg-purple-600 text-white' : 'bg-white/10 text-white/70'}`} onClick={() => setActiveTab('liquidity')}>Liquidity</button>
+          <button className={`px-4 py-2 rounded ${activeTab === 'swap' ? 'bg-purple-600 text-white' : 'bg-white/10 text-white/70'}`} onClick={() => setActiveTab('swap')}>Swap</button>
+          <button className={`px-4 py-2 rounded ${activeTab === 'manage' ? 'bg-purple-600 text-white' : 'bg-white/10 text-white/70'}`} onClick={() => setActiveTab('manage')}>Manage</button>
+          <button className={`px-4 py-2 rounded ${activeTab === 'enabletrading' ? 'bg-purple-600 text-white' : 'bg-white/10 text-white/70'}`} onClick={() => setActiveTab('enabletrading')}>Enable Trading</button>
+        </div>
         {activeTab === 'deploy' && (
           <DeployTab
             contractDetails={contractDetails}
@@ -127,6 +139,15 @@ export default function ContractDeploy() {
             provider={provider}
             signer={signer}
             account={account}
+          />
+        )}
+
+        {activeTab === 'enabletrading' && (
+          <EnableTradingTab
+            provider={provider}
+            signer={signer}
+            account={account}
+            chainId={chainId}
           />
         )}
       </div>
